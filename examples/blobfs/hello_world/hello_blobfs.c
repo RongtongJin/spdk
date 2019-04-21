@@ -40,9 +40,10 @@
 #include "spdk/log.h"
 #include "spdk/string.h"
 
+#include "spdk_internal/thread.h"
+
 struct spdk_bs_dev *g_bs_dev;
 const char *g_bdev_name;
-static uint64_t g_cluster_size;
 struct spdk_filesystem *g_fs = NULL;
 struct sync_args {
 	struct spdk_io_channel *channel;
@@ -54,8 +55,10 @@ uint32_t g_lcore = 0;
 
 __thread struct sync_args g_sync_args;
 
+uint32_t spdk_env_get_first_core(void);
 
-void __call_fn(void *arg1, void *arg2)
+
+static void __call_fn(void *arg1, void *arg2)
 {
 	fs_request_fn fn;
 
@@ -63,7 +66,7 @@ void __call_fn(void *arg1, void *arg2)
 	fn(arg2);
 }
 
-void __send_request(fs_request_fn fn, void *arg)
+static void __send_request(fs_request_fn fn, void *arg)
 {
 	struct spdk_event *event;
 
@@ -87,7 +90,7 @@ shutdown_cb(void *arg1, void *arg2)
 	spdk_fs_unload(fs, stop_cb, NULL);
 }
 
-void SpdkInitializeThread(void)
+static void SpdkInitializeThread(void)
 {
 	struct spdk_thread *thread;
 
@@ -102,7 +105,7 @@ void SpdkInitializeThread(void)
 }
 
 
-void fs_load_cb(__attribute__((unused)) void *ctx,
+static void fs_load_cb(__attribute__((unused)) void *ctx,
 	   struct spdk_filesystem *fs, int fserrno)
 {
 	if (fserrno == 0) {
@@ -111,7 +114,7 @@ void fs_load_cb(__attribute__((unused)) void *ctx,
 	g_spdk_ready = true;
 }
 
-void spdk_blobfs_run(__attribute__((unused)) void *arg1,
+static void spdk_blobfs_run(__attribute__((unused)) void *arg1,
 		 __attribute__((unused)) void *arg2)
 {
 	struct spdk_bdev *bdev;
@@ -134,7 +137,7 @@ void spdk_blobfs_run(__attribute__((unused)) void *arg1,
 	spdk_fs_load(g_bs_dev,__send_request, fs_load_cb, NULL);
 }
 
-void * initialize_spdk(void *arg)
+static void * initialize_spdk(void *arg)
 {
 	struct spdk_app_opts *opts = (struct spdk_app_opts *)arg;
 	int rc;
@@ -161,7 +164,6 @@ void * initialize_spdk(void *arg)
 int main(int argc, char **argv)
 {
 	struct spdk_app_opts *opts = malloc(sizeof(struct spdk_app_opts));
-	printf("--------------------1\n");
 	int rc = 0;
 
 	if (argc < 3) {
@@ -203,15 +205,19 @@ int main(int argc, char **argv)
 		if (err != 0) {
 			SPDK_ERRLOG("open file on filesystem failed");
 		}
-		char * writeword="hello world";
+		spdk_file_truncate(file,g_sync_args.channel,0);
+		char * writeword="456";
 		spdk_file_write(file,g_sync_args.channel,writeword,0,strlen(writeword));
 		spdk_file_sync(file,g_sync_args.channel);
+		
 		printf("file size=%ld\n",spdk_file_get_length(file));
 		int filesize=spdk_file_get_length(file);
 		char * readword=malloc(20);
 		spdk_file_read(file,g_sync_args.channel,readword,0,filesize);
 		printf("readword=%s\n",readword);
+		printf("read done\n");
 		spdk_file_close(file,g_sync_args.channel);
+
 		free(readword);
 	}
 	shutdown_cb(g_fs,NULL);

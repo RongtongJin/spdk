@@ -258,6 +258,7 @@ construct_targets(void)
 static void
 start_fuse_fn(void *arg1, void *arg2)
 {
+	printf("come in start_fuse_fn\n");
 	struct fuse_args args = FUSE_ARGS_INIT(g_fuse_argc, g_fuse_argv);
 	int rc;
 	struct fuse_cmdline_opts opts = {};
@@ -292,7 +293,9 @@ init_cb(void *ctx, struct spdk_filesystem *fs, int fserrno)
 	struct spdk_event *event;
 
 	g_fs = fs;
+	printf("come in init_cb\n");
 	g_channel = spdk_fs_alloc_io_channel_sync(g_fs);
+	
 	event = spdk_event_allocate(1, start_fuse_fn, NULL, NULL);
 	spdk_event_call(event);
 }
@@ -301,6 +304,7 @@ static void
 spdk_fuse_run(void *arg1, void *arg2)
 {
 	construct_targets();
+	printf("come in start_fuse_run\n");
 	spdk_fs_load(g_bs_dev, __send_request, init_cb, NULL);
 }
 
@@ -339,6 +343,7 @@ int main(int argc, char **argv)
 	g_mountpoint = argv[3];
 	g_fuse_argc = argc - 2;
 	g_fuse_argv = &argv[2];
+	spdk_fs_set_cache_size(512);
 
 	rc = spdk_app_start(&opts, spdk_fuse_run, NULL);
 	spdk_app_fini();
