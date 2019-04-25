@@ -50,7 +50,7 @@ stop_cb(void *ctx, int fserrno)
 	spdk_app_stop(0);
 }
 
-static void
+static void  
 shutdown_cb(void *arg1, void *arg2)
 {
 	struct spdk_filesystem *fs = arg1;

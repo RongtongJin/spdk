@@ -1,0 +1,70 @@
+Script started on 2019-04-22 04:19:48+0800
+]0;root@jinrongtong-pc: ~/spdk[01;32mroot@jinrongtong-pc[00m:[01;34m~/spdk[00m# sudo examples/blobfs/hello_world/hello_blobfs ~/fs.coonf AIO0[A]0;root@jinrongtong-pc: ~/spdk[01;32mroot@jinrongtong-pc[00m:[01;34m~/spdk[00m# [K
+[K[A[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[Csudo examples/blobfs/hello_world/hello_blobfs ~/fs.coonf AIO0[A]0;root@jinrongtong-pc: ~/spdk[01;32mroot@jinrongtong-pc[00m:[01;34m~/spdk[00m# [C[C[C[C[C[11Ptest/blobfs/mkfs/mkfs ~/fs.conf AIO0
+[K[A[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[Cexamples/blobfs/hello_world/hello_blobfs ~/fs.coonf AIO0[A]0;root@jinrongtong-pc: ~/spdk[01;32mroot@jinrongtong-pc[00m:[01;34m~/spdk[00m# [C[C[C[C[C[11Ptest/blobfs/mkfs/mkfs ~/fs.conf AIO0
+[K[A[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[Cexamples/blobfs/hello_world/hello_blobfs ~/fs.coonf AIO0[A]0;root@jinrongtong-pc: ~/spdk[01;32mroot@jinrongtong-pc[00m:[01;34m~/spdk[00m# [K
+[K[A[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[Csud[K[K[Ksudo examples/blobfs/hello_world/hello_blobfs ~/fs.coonf AIO0[A]0;root@jinrongtong-pc: ~/spdk[01;32mroot@jinrongtong-pc[00m:[01;34m~/spdk[00m# [C[C[C[C[C[11Ptest/blobfs/mkfs/mkfs ~/fs.conf AIO0
+[K[A[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[Cexamples/blobfs/hello_world/hello_blobfs ~/fs.coonf AIO0[A]0;root@jinrongtong-pc: ~/spdk[01;32mroot@jinrongtong-pc[00m:[01;34m~/spdk[00m# [C[C[C[C[C[30Pscripts/setup.sh 
+[K[A[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C
+0000:3c:00.0 (1179 010f): Active mountpoints on /dev/nvme0n1, so not binding PCI dev
+]0;root@jinrongtong-pc: ~/spdk[01;32mroot@jinrongtong-pc[00m:[01;34m~/spdk[00m# sudo scripts/setup.sh examples/blobfs/hello_world/hello_blobfs ~/fs.coonf AIO0[K1[A]0;root@jinrongtong-pc: ~/spdk[01;32mroot@jinrongtong-pc[00m:[01;34m~/spdk[00m# [C[C[C[C[C[11Ptest/blobfs/mkfs/mkfs ~/fs.conf AIO0
+[K[A[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[K1
+Starting SPDK v19.04-pre / DPDK 19.02.0 initialization...
+[ DPDK EAL parameters: spdk_mkfs --no-shconf -c 0x3 --log-level=lib.eal:6 --base-virtaddr=0x200000000000 --match-allocations --file-prefix=spdk_pid3273 ]
+EAL: No free hugepages reported in hugepages-1048576kB
+app.c: 635:spdk_app_start: *NOTICE*: Total cores available: 2
+reactor.c: 233:_spdk_reactor_run: *NOTICE*: Reactor started on core 0
+reactor.c: 233:_spdk_reactor_run: *NOTICE*: Reactor started on core 1
+bdev_aio.c: 132:bdev_aio_open: *ERROR*: open() failed (file:/home/jinrongtong/AIO), errno 21: Is a directory
+bdev_aio.c: 603:create_aio_bdev: *ERROR*: Unable to open file /home/jinrongtong/AIO. fd: -1 errno: 21
+bdev_aio.c: 768:bdev_aio_initialize: *ERROR*: Unable to create AIO bdev from file /home/jinrongtong/AIO
+mkfs.c:  80:spdk_mkfs_run: *ERROR*: bdev AIO1 not found
+app.c: 714:spdk_app_stop: *WARNING*: spdk_app_stop'd on non-zero
+]0;root@jinrongtong-pc: ~/spdk[01;32mroot@jinrongtong-pc[00m:[01;34m~/spdk[00m# sudo test/blobfs/mkfs/mkfs ~/fs.conf AIO1
+Starting SPDK v19.04-pre / DPDK 19.02.0 initialization...
+[ DPDK EAL parameters: spdk_mkfs --no-shconf -c 0x3 --log-level=lib.eal:6 --base-virtaddr=0x200000000000 --match-allocations --file-prefix=spdk_pid3403 ]
+EAL: No free hugepages reported in hugepages-1048576kB
+app.c: 635:spdk_app_start: *NOTICE*: Total cores available: 2
+reactor.c: 233:_spdk_reactor_run: *NOTICE*: Reactor started on core 0
+reactor.c: 233:_spdk_reactor_run: *NOTICE*: Reactor started on core 1
+Initializing filesystem on bdev AIO1...done.
+mkfs: blobfs.c:695: spdk_fs_free_io_channels: Assertion `fs != NULL' failed.
+Aborted
+]0;root@jinrongtong-pc: ~/spdk[01;32mroot@jinrongtong-pc[00m:[01;34m~/spdk[00m# sudo test/blobfs/mkfs/mkfs ~/fs.conf AIO1[K0
+Starting SPDK v19.04-pre / DPDK 19.02.0 initialization...
+[ DPDK EAL parameters: spdk_mkfs --no-shconf -c 0x3 --log-level=lib.eal:6 --base-virtaddr=0x200000000000 --match-allocations --file-prefix=spdk_pid3410 ]
+EAL: No free hugepages reported in hugepages-1048576kB
+app.c: 635:spdk_app_start: *NOTICE*: Total cores available: 2
+reactor.c: 233:_spdk_reactor_run: *NOTICE*: Reactor started on core 0
+reactor.c: 233:_spdk_reactor_run: *NOTICE*: Reactor started on core 1
+Initializing filesystem on bdev AIO0...done.
+]0;root@jinrongtong-pc: ~/spdk[01;32mroot@jinrongtong-pc[00m:[01;34m~/spdk[00m# sudo test/blobfs/mkfs/mkfs ~/fs.conf AIO0[K1
+Starting SPDK v19.04-pre / DPDK 19.02.0 initialization...
+[ DPDK EAL parameters: spdk_mkfs --no-shconf -c 0x3 --log-level=lib.eal:6 --base-virtaddr=0x200000000000 --match-allocations --file-prefix=spdk_pid3416 ]
+EAL: No free hugepages reported in hugepages-1048576kB
+app.c: 635:spdk_app_start: *NOTICE*: Total cores available: 2
+reactor.c: 233:_spdk_reactor_run: *NOTICE*: Reactor started on core 0
+reactor.c: 233:_spdk_reactor_run: *NOTICE*: Reactor started on core 1
+Initializing filesystem on bdev AIO1...done.
+mkfs: blobfs.c:695: spdk_fs_free_io_channels: Assertion `fs != NULL' failed.
+Aborted
+]0;root@jinrongtong-pc: ~/spdk[01;32mroot@jinrongtong-pc[00m:[01;34m~/spdk[00m# sudo test/blobfs/mkfs/mkfs ~/fs.conf AIO101[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[19Pscripts/setup.sh examples/blobfs/hello_world/hello_blobfs ~/fs.coonf AIO1
+Starting SPDK v19.04-pre / DPDK 19.02.0 initialization...
+[ DPDK EAL parameters: spdk_mkfs --no-shconf -c 0x1 --log-level=lib.eal:6 --base-virtaddr=0x200000000000 --match-allocations --file-prefix=spdk_pid3423 ]
+EAL: No free hugepages reported in hugepages-1048576kB
+app.c: 635:spdk_app_start: *NOTICE*: Total cores available: 1
+reactor.c: 233:_spdk_reactor_run: *NOTICE*: Reactor started on core 0
+using bdev AIO1
+hello_blobfs.c: 194:main: *ERROR*: g_fs is NULL
+hello_blobfs.c: 197:main: *ERROR*: g_sync_args.channel is NULL
+done.
+hello_blobfs: blobfs.c:695: spdk_fs_free_io_channels: Assertion `fs != NULL' failed.
+Aborted
+]0;root@jinrongtong-pc: ~/spdk[01;32mroot@jinrongtong-pc[00m:[01;34m~/spdk[00m# sudo examples/blobfs/hello_world/hello_blobfs ~/fs.coonf AIO1[A]0;root@jinrongtong-pc: ~/spdk[01;32mroot@jinrongtong-pc[00m:[01;34m~/spdk[00m# [C[C[C[C[C[11Ptest/blobfs/mkfs/mkfs ~/fs.conf AIO1
+[K[A[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C
+Starting SPDK v19.04-pre / DPDK 19.02.0 initialization...
+[ DPDK EAL parameters: spdk_mkfs --no-shconf -c 0x3 --log-level=lib.eal:6 --base-virtaddr=0x200000000000 --match-allocations --file-prefix=spdk_pid3470 ]
+EAL: No free hugepages reported in hugepages-1048576kB
+app.c: 635:spdk_app_start: *NOTICE*: Total cores available: 2
+reactor.c: 233:_spdk_reactor_run: *NOTICE*: Reactor started on core 0
+reactor.c: 233:_spdk_reactor_run: *NOTICE*: Reactor started on cor
