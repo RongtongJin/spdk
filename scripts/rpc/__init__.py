@@ -9,6 +9,7 @@ from . import log
 from . import lvol
 from . import nbd
 from . import net
+from . import notify
 from . import nvme
 from . import nvmf
 from . import pmem
@@ -39,6 +40,11 @@ def get_rpc_methods(client, current=None):
         params['current'] = current
 
     return client.call('get_rpc_methods', params)
+
+
+def get_spdk_version(client):
+    """Get SPDK version"""
+    return client.call('get_spdk_version')
 
 
 def _json_dump(config, fd, indent):

@@ -556,8 +556,6 @@ _ftl_dev_init_thread(void *ctx)
 	struct ftl_thread *thread = ctx;
 	struct spdk_ftl_dev *dev = thread->dev;
 
-	thread->thread = spdk_get_thread();
-
 	thread->poller = spdk_poller_register(thread->poller_fn, thread, thread->period_us);
 	if (!thread->poller) {
 		SPDK_ERRLOG("Unable to register poller\n");
@@ -840,11 +838,14 @@ spdk_ftl_dev_init(const struct spdk_ftl_dev_init_opts *opts, spdk_ftl_init_fn cb
 				sizeof(struct ftl_io_channel),
 				NULL);
 
+	TAILQ_INIT(&dev->retry_queue);
 	dev->ioch = spdk_get_io_channel(dev);
 	dev->init_cb = cb;
 	dev->init_arg = cb_arg;
 	dev->range = opts->range;
 	dev->limit = SPDK_FTL_LIMIT_MAX;
+	dev->cache_bdev_desc = opts->cache_bdev_desc;
+
 	dev->name = strdup(opts->name);
 	if (!dev->name) {
 		SPDK_ERRLOG("Unable to set device name\n");
@@ -947,9 +948,6 @@ ftl_dev_free_sync(struct spdk_ftl_dev *dev)
 	}
 	pthread_mutex_unlock(&g_ftl_queue_lock);
 
-	ftl_dev_free_thread(dev, &dev->read_thread);
-	ftl_dev_free_thread(dev, &dev->core_thread);
-
 	assert(LIST_EMPTY(&dev->wptr_list));
 
 	ftl_dev_dump_bands(dev);
@@ -986,6 +984,9 @@ ftl_halt_poller(void *ctx)
 
 	if (!dev->core_thread.poller && !dev->read_thread.poller) {
 		spdk_poller_unregister(&dev->halt_poller);
+
+		ftl_dev_free_thread(dev, &dev->read_thread);
+		ftl_dev_free_thread(dev, &dev->core_thread);
 
 		ftl_anm_unregister_device(dev);
 		ftl_dev_free_sync(dev);

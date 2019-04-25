@@ -54,6 +54,10 @@ DIRS-y += ocf/env
 DEPDIRS-ocf := ocf/env
 endif
 
+ifeq ($(CONFIG_REDUCE),y)
+DIRS-y += compress
+endif
+
 ifeq ($(OS),Linux)
 DIRS-y += aio
 DIRS-$(CONFIG_ISCSI_INITIATOR) += iscsi

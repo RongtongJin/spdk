@@ -59,7 +59,7 @@ std::string g_bdev_name;
 volatile bool g_spdk_ready = false;
 volatile bool g_spdk_start_failure = false;
 struct sync_args {
-	struct spdk_io_channel *channel;
+	struct spdk_fs_thread_ctx *channel;
 };
 
 __thread struct sync_args g_sync_args;
@@ -584,9 +584,16 @@ void SpdkInitializeThread(void)
 	struct spdk_thread *thread;
 
 	if (g_fs != NULL) {
-		thread = spdk_thread_create("spdk_rocksdb");
+		thread = spdk_thread_create("spdk_rocksdb", NULL);
 		spdk_set_thread(thread);
-		g_sync_args.channel = spdk_fs_alloc_io_channel_sync(g_fs);
+		g_sync_args.channel = spdk_fs_alloc_thread_ctx(g_fs);
+	}
+}
+
+void SpdkFinalizeThread(void)
+{
+	if (g_sync_args.channel) {
+		spdk_fs_free_thread_ctx(g_sync_args.channel);
 	}
 }
 
@@ -601,6 +608,7 @@ static void SpdkStartThreadWrapper(void *arg)
 
 	SpdkInitializeThread();
 	state->user_function(state->arg);
+	SpdkFinalizeThread();
 	delete state;
 }
 
@@ -623,8 +631,7 @@ fs_load_cb(__attribute__((unused)) void *ctx,
 }
 
 static void
-spdk_rocksdb_run(__attribute__((unused)) void *arg1,
-		 __attribute__((unused)) void *arg2)
+spdk_rocksdb_run(__attribute__((unused)) void *arg1)
 {
 	struct spdk_bdev *bdev;
 
@@ -723,6 +730,7 @@ SpdkEnv::~SpdkEnv()
 		if (!g_sync_args.channel) {
 			SpdkInitializeThread();
 		}
+
 		iter = spdk_fs_iter_first(g_fs);
 		while (iter != NULL) {
 			file = spdk_fs_iter_get_file(iter);
@@ -731,6 +739,7 @@ SpdkEnv::~SpdkEnv()
 		}
 	}
 
+	SpdkFinalizeThread();
 	spdk_app_start_shutdown();
 	pthread_join(mSpdkTid, NULL);
 }

@@ -80,7 +80,7 @@ bdev_null_destruct(void *ctx)
 
 	TAILQ_REMOVE(&g_null_bdev_head, bdev, tailq);
 	free(bdev->bdev.name);
-	spdk_dma_free(bdev);
+	free(bdev);
 
 	return 0;
 }
@@ -188,7 +188,7 @@ create_null_bdev(const char *name, const struct spdk_uuid *uuid,
 		return NULL;
 	}
 
-	bdev = spdk_dma_zmalloc(sizeof(*bdev), 0, NULL);
+	bdev = calloc(1, sizeof(*bdev));
 	if (!bdev) {
 		SPDK_ERRLOG("could not allocate null_bdev\n");
 		return NULL;
@@ -196,7 +196,7 @@ create_null_bdev(const char *name, const struct spdk_uuid *uuid,
 
 	bdev->bdev.name = strdup(name);
 	if (!bdev->bdev.name) {
-		spdk_dma_free(bdev);
+		free(bdev);
 		return NULL;
 	}
 	bdev->bdev.product_name = "Null disk";
@@ -217,7 +217,7 @@ create_null_bdev(const char *name, const struct spdk_uuid *uuid,
 	rc = spdk_bdev_register(&bdev->bdev);
 	if (rc) {
 		free(bdev->bdev.name);
-		spdk_dma_free(bdev);
+		free(bdev);
 		return NULL;
 	}
 
@@ -279,6 +279,12 @@ null_bdev_destroy_cb(void *io_device, void *ctx_buf)
 	spdk_poller_unregister(&ch->poller);
 }
 
+static void
+_bdev_null_cleanup_cb(void *arg)
+{
+	spdk_free(g_null_read_buf);
+}
+
 static int
 bdev_null_initialize(void)
 {
@@ -295,7 +301,8 @@ bdev_null_initialize(void)
 	 *  Instead of using a real rbuf from the bdev pool, just always point to
 	 *  this same zeroed buffer.
 	 */
-	g_null_read_buf = spdk_dma_zmalloc(SPDK_BDEV_LARGE_BUF_MAX_SIZE, 0, NULL);
+	g_null_read_buf = spdk_zmalloc(SPDK_BDEV_LARGE_BUF_MAX_SIZE, 0, NULL,
+				       SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA);
 
 	/*
 	 * We need to pick some unique address as our "io device" - so just use the
@@ -357,15 +364,17 @@ bdev_null_initialize(void)
 
 		i++;
 	}
-
 end:
+	if (rc) {
+		spdk_io_device_unregister(&g_null_bdev_head, _bdev_null_cleanup_cb);
+	}
 	return rc;
 }
 
 static void
 _bdev_null_finish_cb(void *arg)
 {
-	spdk_dma_free(g_null_read_buf);
+	spdk_free(g_null_read_buf);
 	spdk_bdev_module_finish_done();
 }
 

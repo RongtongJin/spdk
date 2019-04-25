@@ -122,7 +122,7 @@ static const char *spdk_nvmf_tcp_term_req_fes_str[] = {
 #define TRACE_TCP_REQUEST_STATE_COMPLETED				SPDK_TPOINT_ID(TRACE_GROUP_NVMF_TCP, 0x9)
 #define TRACE_TCP_FLUSH_WRITEBUF_START					SPDK_TPOINT_ID(TRACE_GROUP_NVMF_TCP, 0xA)
 #define TRACE_TCP_FLUSH_WRITEBUF_DONE					SPDK_TPOINT_ID(TRACE_GROUP_NVMF_TCP, 0xB)
-#define TRACE_TCP_FLUSH_WRITEBUF_PDU_DONE				SPDK_TPOINT_ID(TRACE_GROUP_NVMF_TCP, 0xC)
+#define TRACE_TCP_READ_FROM_SOCKET_DONE					SPDK_TPOINT_ID(TRACE_GROUP_NVMF_TCP, 0xC)
 
 SPDK_TRACE_REGISTER_FN(nvmf_tcp_trace, "nvmf_tcp", TRACE_GROUP_NVMF_TCP)
 {
@@ -163,8 +163,8 @@ SPDK_TRACE_REGISTER_FN(nvmf_tcp_trace, "nvmf_tcp", TRACE_GROUP_NVMF_TCP)
 	spdk_trace_register_description("TCP_FLUSH_WRITEBUF_DONE", "",
 					TRACE_TCP_FLUSH_WRITEBUF_DONE,
 					OWNER_NONE, OBJECT_NONE, 0, 0, "");
-	spdk_trace_register_description("TCP_FLUSH_WRITEBUF_PDU_DONE", "",
-					TRACE_TCP_FLUSH_WRITEBUF_PDU_DONE,
+	spdk_trace_register_description("TCP_READ_FROM_SOCKET_DONE", "",
+					TRACE_TCP_READ_FROM_SOCKET_DONE,
 					OWNER_NONE, OBJECT_NONE, 0, 0, "");
 }
 
@@ -1286,15 +1286,14 @@ spdk_nvmf_tcp_send_c2h_term_req(struct spdk_nvmf_tcp_qpair *tqpair, struct nvme_
 		DSET32(&c2h_term_req->fei, error_offset);
 	}
 
-	rsp_pdu->data = (uint8_t *)rsp_pdu->hdr.raw + c2h_term_req_hdr_len;
 	copy_len = pdu->hdr.common.hlen;
 	if (copy_len > SPDK_NVME_TCP_TERM_REQ_ERROR_DATA_MAX_SIZE) {
 		copy_len = SPDK_NVME_TCP_TERM_REQ_ERROR_DATA_MAX_SIZE;
 	}
 
 	/* Copy the error info into the buffer */
-	memcpy((uint8_t *)rsp_pdu->data, pdu->hdr.raw, copy_len);
-	rsp_pdu->data_len = copy_len;
+	memcpy((uint8_t *)rsp_pdu->hdr.raw + c2h_term_req_hdr_len, pdu->hdr.raw, copy_len);
+	nvme_tcp_pdu_set_data(rsp_pdu, (uint8_t *)rsp_pdu->hdr.raw + c2h_term_req_hdr_len, copy_len);
 
 	/* Contain the header of the wrong received pdu */
 	c2h_term_req->common.plen = c2h_term_req->common.hlen + copy_len;
@@ -1417,10 +1416,9 @@ spdk_nvmf_tcp_h2c_data_hdr_handle(struct spdk_nvmf_tcp_transport *ttransport,
 	}
 
 	pdu->ctx = tcp_req;
-	pdu->data_len = h2c_data->datal;
 	iov_index = pdu->hdr.h2c_data.datao / ttransport->transport.opts.io_unit_size;
-	pdu->data = tcp_req->req.iov[iov_index].iov_base + (pdu->hdr.h2c_data.datao %
-			ttransport->transport.opts.io_unit_size);
+	nvme_tcp_pdu_set_data(pdu, tcp_req->req.iov[iov_index].iov_base + (pdu->hdr.h2c_data.datao %
+			      ttransport->transport.opts.io_unit_size), h2c_data->datal);
 	spdk_nvmf_tcp_qpair_set_recv_state(tqpair, NVME_TCP_PDU_RECV_STATE_AWAIT_PDU_PAYLOAD);
 	return;
 
@@ -1597,8 +1595,8 @@ spdk_nvmf_tcp_h2c_term_req_hdr_handle(struct spdk_nvmf_tcp_qpair *tqpair,
 	}
 
 	/* set the data buffer */
-	pdu->data = (uint8_t *)pdu->hdr.raw + h2c_term_req->common.hlen;
-	pdu->data_len = h2c_term_req->common.plen - h2c_term_req->common.hlen;
+	nvme_tcp_pdu_set_data(pdu, (uint8_t *)pdu->hdr.raw + h2c_term_req->common.hlen,
+			      h2c_term_req->common.plen - h2c_term_req->common.hlen);
 	spdk_nvmf_tcp_qpair_set_recv_state(tqpair, NVME_TCP_PDU_RECV_STATE_AWAIT_PDU_PAYLOAD);
 	return;
 end:
@@ -1904,6 +1902,7 @@ spdk_nvmf_tcp_sock_process(struct spdk_nvmf_tcp_qpair *tqpair)
 				return NVME_TCP_PDU_FATAL;
 			} else if (rc > 0) {
 				pdu->ch_valid_bytes += rc;
+				spdk_trace_record(TRACE_TCP_READ_FROM_SOCKET_DONE, 0, rc, 0, 0);
 				if (spdk_likely(tqpair->recv_state == NVME_TCP_PDU_RECV_STATE_AWAIT_PDU_READY)) {
 					spdk_nvmf_tcp_qpair_set_recv_state(tqpair, NVME_TCP_PDU_RECV_STATE_AWAIT_PDU_CH);
 				}
@@ -1945,9 +1944,11 @@ spdk_nvmf_tcp_sock_process(struct spdk_nvmf_tcp_qpair *tqpair)
 							(void *)&pdu->hdr.raw + sizeof(struct spdk_nvme_tcp_common_pdu_hdr) + pdu->psh_valid_bytes);
 				if (rc < 0) {
 					return NVME_TCP_PDU_FATAL;
+				} else if (rc > 0) {
+					spdk_trace_record(TRACE_TCP_READ_FROM_SOCKET_DONE,
+							  0, rc, 0, 0);
+					pdu->psh_valid_bytes += rc;
 				}
-
-				pdu->psh_valid_bytes += rc;
 				if (pdu->psh_valid_bytes < psh_len) {
 					return NVME_TCP_PDU_IN_PROGRESS;
 				}
@@ -1960,7 +1961,7 @@ spdk_nvmf_tcp_sock_process(struct spdk_nvmf_tcp_qpair *tqpair)
 			pdu = &tqpair->pdu_in_progress;
 
 			/* check whether the data is valid, if not we just return */
-			if (!pdu->data) {
+			if (!pdu->data_len) {
 				return NVME_TCP_PDU_IN_PROGRESS;
 			}
 
@@ -2260,8 +2261,7 @@ spdk_nvmf_tcp_send_c2h_data(struct spdk_nvmf_tcp_qpair *tqpair,
 
 	c2h_data->common.plen = plen;
 
-	rsp_pdu->data = tcp_req->req.iov[iov_index].iov_base + offset;
-	rsp_pdu->data_len = c2h_data->datal;
+	nvme_tcp_pdu_set_data(rsp_pdu, tcp_req->req.iov[iov_index].iov_base + offset, c2h_data->datal);
 
 	tcp_req->c2h_data_offset += c2h_data->datal;
 	if (iov_index == (tcp_req->req.iovcnt - 1) && (tcp_req->c2h_data_offset == tcp_req->req.length)) {
@@ -2366,8 +2366,7 @@ spdk_nvmf_tcp_pdu_set_buf_from_req(struct spdk_nvmf_tcp_qpair *tqpair,
 		SPDK_DEBUGLOG(SPDK_LOG_NVMF_TCP, "Not need to send r2t for tcp_req(%p) on tqpair=%p\n", tcp_req,
 			      tqpair);
 		/* No need to send r2t, contained in the capsuled data */
-		pdu->data = tcp_req->req.data;
-		pdu->data_len = tcp_req->req.length;
+		nvme_tcp_pdu_set_data(pdu, tcp_req->req.data, tcp_req->req.length);
 		spdk_nvmf_tcp_qpair_set_recv_state(tqpair, NVME_TCP_PDU_RECV_STATE_AWAIT_PDU_PAYLOAD);
 		spdk_nvmf_tcp_req_set_state(tcp_req, TCP_REQUEST_STATE_TRANSFERRING_HOST_TO_CONTROLLER);
 	}
@@ -2712,19 +2711,6 @@ spdk_nvmf_tcp_poll_group_poll(struct spdk_nvmf_transport_poll_group *group)
 	return 0;
 }
 
-static bool
-spdk_nvmf_tcp_qpair_is_idle(struct spdk_nvmf_qpair *qpair)
-{
-	struct spdk_nvmf_tcp_qpair *tqpair;
-
-	tqpair = SPDK_CONTAINEROF(qpair, struct spdk_nvmf_tcp_qpair, qpair);
-	if (tqpair->state_cntr[TCP_REQUEST_STATE_FREE] == tqpair->max_queue_depth) {
-		return true;
-	}
-
-	return false;
-}
-
 static int
 spdk_nvmf_tcp_qpair_get_trid(struct spdk_nvmf_qpair *qpair,
 			     struct spdk_nvme_transport_id *trid, bool peer)
@@ -2840,7 +2826,6 @@ const struct spdk_nvmf_transport_ops spdk_nvmf_transport_tcp = {
 	.req_complete = spdk_nvmf_tcp_req_complete,
 
 	.qpair_fini = spdk_nvmf_tcp_close_qpair,
-	.qpair_is_idle = spdk_nvmf_tcp_qpair_is_idle,
 	.qpair_get_local_trid = spdk_nvmf_tcp_qpair_get_local_trid,
 	.qpair_get_peer_trid = spdk_nvmf_tcp_qpair_get_peer_trid,
 	.qpair_get_listen_trid = spdk_nvmf_tcp_qpair_get_listen_trid,

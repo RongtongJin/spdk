@@ -42,14 +42,6 @@
 #include "spdk_internal/log.h"
 #include "spdk_internal/thread.h"
 
-#ifdef __linux__
-#include <sys/prctl.h>
-#endif
-
-#ifdef __FreeBSD__
-#include <pthread_np.h>
-#endif
-
 #define SPDK_MSG_BATCH_SIZE		8
 
 static pthread_mutex_t g_devlist_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -113,6 +105,8 @@ struct spdk_thread {
 	TAILQ_ENTRY(spdk_thread)	tailq;
 	char				*name;
 
+	struct spdk_cpuset		*cpumask;
+
 	uint64_t			tsc_last;
 	struct spdk_thread_stats	stats;
 
@@ -147,18 +141,6 @@ static inline struct spdk_thread *
 _get_thread(void)
 {
 	return tls_thread;
-}
-
-static void
-_set_thread_name(const char *thread_name)
-{
-#if defined(__linux__)
-	prctl(PR_SET_NAME, thread_name, 0, 0, 0);
-#elif defined(__FreeBSD__)
-	pthread_set_name_np(pthread_self(), thread_name);
-#else
-#error missing platform support for thread name
-#endif
 }
 
 int
@@ -200,7 +182,7 @@ spdk_thread_lib_fini(void)
 }
 
 struct spdk_thread *
-spdk_thread_create(const char *name)
+spdk_thread_create(const char *name, struct spdk_cpuset *cpumask)
 {
 	struct spdk_thread *thread;
 	struct spdk_msg *msgs[SPDK_MSG_MEMPOOL_CACHE_SIZE];
@@ -210,6 +192,19 @@ spdk_thread_create(const char *name)
 	if (!thread) {
 		SPDK_ERRLOG("Unable to allocate memory for thread\n");
 		return NULL;
+	}
+
+	thread->cpumask = spdk_cpuset_alloc();
+	if (!thread->cpumask) {
+		free(thread);
+		SPDK_ERRLOG("Unable to allocate memory for CPU mask\n");
+		return NULL;
+	}
+
+	if (cpumask) {
+		spdk_cpuset_copy(thread->cpumask, cpumask);
+	} else {
+		spdk_cpuset_negate(thread->cpumask);
 	}
 
 	TAILQ_INIT(&thread->io_channels);
@@ -223,6 +218,7 @@ spdk_thread_create(const char *name)
 	thread->messages = spdk_ring_create(SPDK_RING_TYPE_MP_SC, 65536, SPDK_ENV_SOCKET_ID_ANY);
 	if (!thread->messages) {
 		SPDK_ERRLOG("Unable to allocate memory for message ring\n");
+		spdk_cpuset_free(thread->cpumask);
 		free(thread);
 		return NULL;
 	}
@@ -239,7 +235,6 @@ spdk_thread_create(const char *name)
 	}
 
 	if (name) {
-		_set_thread_name(name);
 		thread->name = strdup(name);
 	} else {
 		thread->name = spdk_sprintf_alloc("%p", thread);
@@ -303,6 +298,8 @@ spdk_thread_exit(struct spdk_thread *thread)
 		TAILQ_REMOVE(&thread->timer_pollers, poller, tailq);
 		free(poller);
 	}
+
+	spdk_cpuset_free(thread->cpumask);
 
 	pthread_mutex_lock(&g_devlist_mutex);
 	assert(g_thread_count > 0);

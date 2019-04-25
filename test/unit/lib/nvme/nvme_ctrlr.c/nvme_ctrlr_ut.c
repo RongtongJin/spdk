@@ -1547,7 +1547,7 @@ test_ctrlr_get_default_ctrlr_opts(void)
 			 sizeof(opts.extended_host_id)) == 0);
 	CU_ASSERT(strlen(opts.src_addr) == 0);
 	CU_ASSERT(strlen(opts.src_svcid) == 0);
-	CU_ASSERT_EQUAL(opts.admin_timeout_ms, NVME_MAX_TIMEOUT_PERIOD * 1000);
+	CU_ASSERT_EQUAL(opts.admin_timeout_ms, NVME_MAX_ADMIN_TIMEOUT_IN_SECS * 1000);
 }
 
 static void
@@ -1691,10 +1691,10 @@ test_spdk_nvme_ctrlr_doorbell_buffer_config(void)
 	ctrlr.cdata.oacs.doorbell_buffer_config = 1;
 	ctrlr.trid.trtype = SPDK_NVME_TRANSPORT_PCIE;
 	ctrlr.page_size = 0x1000;
-	MOCK_CLEAR(spdk_malloc)
-	MOCK_CLEAR(spdk_zmalloc)
-	MOCK_CLEAR(spdk_dma_malloc)
-	MOCK_CLEAR(spdk_dma_zmalloc)
+	MOCK_CLEAR(spdk_malloc);
+	MOCK_CLEAR(spdk_zmalloc);
+	MOCK_CLEAR(spdk_dma_malloc);
+	MOCK_CLEAR(spdk_dma_zmalloc);
 	ret = nvme_ctrlr_set_doorbell_buffer_config(&ctrlr);
 	CU_ASSERT(ret == 0);
 	nvme_ctrlr_free_doorbell_buffer(&ctrlr);

@@ -77,9 +77,6 @@ struct ftl_band_reloc {
 	struct spdk_ring			*write_queue;
 
 	TAILQ_ENTRY(ftl_band_reloc)		entry;
-
-	/* TODO: get rid of md_buf */
-	void					*md_buf;
 };
 
 struct ftl_reloc {
@@ -172,7 +169,6 @@ ftl_reloc_read_lba_map_cb(void *arg, int status)
 	struct ftl_band_reloc *breloc = ftl_io_get_band_reloc(io);
 
 	assert(status == 0);
-	spdk_dma_free(breloc->md_buf);
 	ftl_io_free(io);
 	_ftl_reloc_prep(breloc);
 }
@@ -189,17 +185,11 @@ ftl_reloc_read_lba_map(struct ftl_band_reloc *breloc)
 	io->cb.ctx = io;
 	io->cb.fn = ftl_reloc_read_lba_map_cb;
 
-	breloc->md_buf = spdk_dma_zmalloc(ftl_lba_map_num_lbks(dev) * FTL_BLOCK_SIZE,
-					  FTL_BLOCK_SIZE, NULL);
-	if (!breloc->md_buf) {
-		return -1;
-	}
-
 	if (ftl_band_alloc_md(band)) {
 		assert(false);
 	}
 
-	return ftl_band_read_lba_map(band, &band->md, breloc->md_buf, &io->cb);
+	return ftl_band_read_lba_map(band, &band->md, band->md.dma_buf, &io->cb);
 }
 
 static void
@@ -464,7 +454,13 @@ ftl_reloc_io_init(struct ftl_band_reloc *breloc, struct ftl_io *io,
 	}
 
 	io = ftl_io_init_internal(&opts);
+	if (!io) {
+		spdk_dma_free(opts.data);
+		return -1;
+	}
+
 	io->ppa = ppa;
+
 	return 0;
 }
 
@@ -473,6 +469,7 @@ ftl_reloc_read(struct ftl_band_reloc *breloc, struct ftl_io *io)
 {
 	struct ftl_ppa ppa;
 	size_t num_lbks;
+	int rc;
 
 	num_lbks = ftl_reloc_next_lbks(breloc, &ppa);
 
@@ -486,7 +483,12 @@ ftl_reloc_read(struct ftl_band_reloc *breloc, struct ftl_io *io)
 		return -1;
 	}
 
-	return ftl_io_read(io);
+	rc = ftl_io_read(io);
+	if (rc == -ENOMEM) {
+		rc = 0;
+	}
+
+	return rc;
 }
 
 static void
@@ -623,8 +625,24 @@ ftl_band_reloc_init(struct ftl_reloc *reloc, struct ftl_band_reloc *breloc,
 static void
 ftl_band_reloc_free(struct ftl_band_reloc *breloc)
 {
+	struct ftl_reloc *reloc = breloc->parent;
+	struct ftl_io *io;
+	size_t i, num_ios;
+
 	if (!breloc) {
 		return;
+	}
+
+	if (breloc->active) {
+		num_ios = spdk_ring_dequeue(breloc->write_queue, (void **)reloc->io, reloc->max_qdepth);
+		for (i = 0; i < num_ios; ++i) {
+			io = reloc->io[i];
+			if (io->flags & FTL_IO_INITIALIZED) {
+				ftl_reloc_free_io(breloc, io);
+			}
+		}
+
+		ftl_reloc_release_io(breloc);
 	}
 
 	spdk_ring_free(breloc->free_queue);

@@ -647,8 +647,9 @@ _crypto_operation(struct spdk_bdev_io *bdev_io, enum rte_crypto_cipher_operation
 		 * has a buffer, which ours always will.  So, until we modify that API
 		 * or better yet the current ZCOPY work lands, this is the best we can do.
 		 */
-		io_ctx->cry_iov.iov_base = spdk_dma_malloc(total_length,
-					   spdk_bdev_get_buf_align(bdev_io->bdev), NULL);
+		io_ctx->cry_iov.iov_base = spdk_malloc(total_length,
+						       spdk_bdev_get_buf_align(bdev_io->bdev), NULL,
+						       SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
 		if (!io_ctx->cry_iov.iov_base) {
 			SPDK_ERRLOG("ERROR trying to allocate write buffer for encryption!\n");
 			rc = -ENOMEM;
@@ -871,7 +872,7 @@ _complete_internal_write(struct spdk_bdev_io *bdev_io, bool success, void *cb_ar
 	int status = success ? SPDK_BDEV_IO_STATUS_SUCCESS : SPDK_BDEV_IO_STATUS_FAILED;
 	struct crypto_bdev_io *orig_ctx = (struct crypto_bdev_io *)orig_io->driver_ctx;
 
-	spdk_dma_free(orig_ctx->cry_iov.iov_base);
+	spdk_free(orig_ctx->cry_iov.iov_base);
 	spdk_bdev_io_complete(orig_io, status);
 	spdk_bdev_free_io(bdev_io);
 }
@@ -1344,6 +1345,7 @@ vbdev_crypto_finish(void)
 	struct vbdev_dev *device;
 	struct device_qp *dev_qp;
 	unsigned i;
+	int rc;
 
 	while ((name = TAILQ_FIRST(&g_bdev_names))) {
 		TAILQ_REMOVE(&g_bdev_names, name, link);
@@ -1368,8 +1370,11 @@ vbdev_crypto_finish(void)
 				rte_dev->dev_ops->queue_pair_release(rte_dev, i);
 			}
 		}
-
 		free(device);
+	}
+	rc = rte_vdev_uninit(AESNI_MB);
+	if (rc) {
+		SPDK_ERRLOG("%d from rte_vdev_uninit\n", rc);
 	}
 
 	while ((dev_qp = TAILQ_FIRST(&g_device_qp))) {
@@ -1605,11 +1610,11 @@ vbdev_crypto_claim(struct spdk_bdev *bdev)
 			goto error_session_init;
 		}
 
-		rc = spdk_vbdev_register(&vbdev->crypto_bdev, &vbdev->base_bdev, 1);
+		rc = spdk_bdev_register(&vbdev->crypto_bdev);
 		if (rc < 0) {
-			SPDK_ERRLOG("ERROR trying to register vbdev\n");
+			SPDK_ERRLOG("ERROR trying to register bdev\n");
 			rc = -EINVAL;
-			goto error_vbdev_register;
+			goto error_bdev_register;
 		}
 		SPDK_DEBUGLOG(SPDK_LOG_VBDEV_crypto, "registered io_device and virtual bdev for: %s\n",
 			      name->vbdev_name);
@@ -1619,7 +1624,7 @@ vbdev_crypto_claim(struct spdk_bdev *bdev)
 	return rc;
 
 	/* Error cleanup paths. */
-error_vbdev_register:
+error_bdev_register:
 error_session_init:
 	rte_cryptodev_sym_session_free(vbdev->session_decrypt);
 error_session_de_create:

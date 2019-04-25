@@ -20,6 +20,7 @@ if [ $SPDK_TEST_NVME_CLI -eq 1 ]; then
 	run_test suite test/nvmf/nvme_cli/nvme_cli.sh
 fi
 run_test suite test/nvmf/lvol/nvmf_lvol.sh
+run_test suite test/nvmf/srq_overwhelm/srq_overwhelm.sh
 run_test suite test/nvmf/shutdown/shutdown.sh
 run_test suite test/nvmf/bdev_io_wait/bdev_io_wait.sh
 run_test suite test/nvmf/create_transport/create_transport.sh
@@ -36,8 +37,9 @@ run_test suite test/nvmf/host/perf.sh
 # TODO: disabled due to intermittent failures (RDMA_CM_EVENT_UNREACHABLE/ETIMEDOUT)
 #run_test test/nvmf/host/identify_kernel_nvmf.sh
 run_test suite test/nvmf/host/aer.sh
-run_test suite test/nvmf/host/fio.sh
-
+if [ $SPDK_RUN_ASAN -eq 0 ]; then
+    run_test suite test/nvmf/host/fio.sh
+fi
 run_test suite test/nvmf/nmic/nmic.sh
 
 timing_exit host

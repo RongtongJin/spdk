@@ -52,8 +52,6 @@
 #define KAS_TIME_UNIT_IN_MS 100
 #define KAS_DEFAULT_VALUE (MIN_KEEP_ALIVE_TIMEOUT_IN_MS / KAS_TIME_UNIT_IN_MS)
 
-#define MODEL_NUMBER "SPDK bdev Controller"
-
 /*
  * Report the SPDK version as the firmware revision.
  * SPDK_VERSION_STRING won't fit into FR (only 8 bytes), so try to fit the most important parts.
@@ -269,6 +267,7 @@ spdk_nvmf_ctrlr_create(struct spdk_nvmf_subsystem *subsystem,
 		return NULL;
 	}
 
+	TAILQ_INIT(&ctrlr->log_head);
 	ctrlr->subsys = subsystem;
 	ctrlr->thread = req->qpair->group->thread;
 
@@ -361,8 +360,14 @@ static void
 _spdk_nvmf_ctrlr_destruct(void *ctx)
 {
 	struct spdk_nvmf_ctrlr *ctrlr = ctx;
+	struct spdk_nvmf_reservation_log *log, *log_tmp;
 
 	spdk_nvmf_ctrlr_stop_keep_alive_timer(ctrlr);
+
+	TAILQ_FOREACH_SAFE(log, &ctrlr->log_head, link, log_tmp) {
+		TAILQ_REMOVE(&ctrlr->log_head, log, link);
+		free(log);
+	}
 	free(ctrlr);
 }
 
@@ -1228,6 +1233,13 @@ spdk_nvmf_ctrlr_async_event_request(struct spdk_nvmf_request *req)
 		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
 	}
 
+	if (ctrlr->reservation_event.bits.async_event_type ==
+	    SPDK_NVME_ASYNC_EVENT_TYPE_IO) {
+		rsp->cdw0 = ctrlr->reservation_event.raw;
+		ctrlr->reservation_event.raw = 0;
+		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+	}
+
 	ctrlr->aer_req = req;
 	return SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS;
 }
@@ -1351,6 +1363,48 @@ spdk_nvmf_get_cmds_and_effects_log_page(void *buffer,
 	}
 }
 
+static void
+spdk_nvmf_get_reservation_notification_log_page(struct spdk_nvmf_ctrlr *ctrlr,
+		void *data, uint64_t offset, uint32_t length)
+{
+	uint32_t unit_log_len, avail_log_len, next_pos, copy_len;
+	struct spdk_nvmf_reservation_log *log, *log_tmp;
+	uint8_t *buf = data;
+
+	unit_log_len = sizeof(struct spdk_nvme_reservation_notification_log);
+	/* No available log, return 1 zeroed log page */
+	if (!ctrlr->num_avail_log_pages) {
+		memset(buf, 0, spdk_min(length, unit_log_len));
+		return;
+	}
+
+	avail_log_len = ctrlr->num_avail_log_pages * unit_log_len;
+	if (offset >= avail_log_len) {
+		return;
+	}
+
+	next_pos = copy_len = 0;
+	TAILQ_FOREACH_SAFE(log, &ctrlr->log_head, link, log_tmp) {
+		TAILQ_REMOVE(&ctrlr->log_head, log, link);
+		ctrlr->num_avail_log_pages--;
+
+		next_pos += unit_log_len;
+		if (next_pos > offset) {
+			copy_len = spdk_min(next_pos - offset, length);
+			memcpy(buf, &log->log, copy_len);
+			length -= copy_len;
+			offset += copy_len;
+			buf += copy_len;
+		}
+		free(log);
+
+		if (length == 0) {
+			break;
+		}
+	}
+	return;
+}
+
 static int
 spdk_nvmf_ctrlr_get_log_page(struct spdk_nvmf_request *req)
 {
@@ -1414,6 +1468,9 @@ spdk_nvmf_ctrlr_get_log_page(struct spdk_nvmf_request *req)
 			return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
 		case SPDK_NVME_LOG_CHANGED_NS_LIST:
 			spdk_nvmf_get_changed_ns_list_log_page(ctrlr, req->data, offset, len);
+			return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+		case SPDK_NVME_LOG_RESERVATION_NOTIFICATION:
+			spdk_nvmf_get_reservation_notification_log_page(ctrlr, req->data, offset, len);
 			return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
 		default:
 			goto invalid_log_page;
@@ -1498,7 +1555,7 @@ spdk_nvmf_ctrlr_identify_ctrlr(struct spdk_nvmf_ctrlr *ctrlr, struct spdk_nvme_c
 	 * NVM subsystem fields (reserved for discovery subsystems)
 	 */
 	if (subsystem->subtype == SPDK_NVMF_SUBTYPE_NVME) {
-		spdk_strcpy_pad(cdata->mn, MODEL_NUMBER, sizeof(cdata->mn), ' ');
+		spdk_strcpy_pad(cdata->mn, spdk_nvmf_subsystem_get_mn(subsystem), sizeof(cdata->mn), ' ');
 		spdk_strcpy_pad(cdata->sn, spdk_nvmf_subsystem_get_sn(subsystem), sizeof(cdata->sn), ' ');
 		cdata->kas = KAS_DEFAULT_VALUE;
 
@@ -1525,7 +1582,12 @@ spdk_nvmf_ctrlr_identify_ctrlr(struct spdk_nvmf_ctrlr *ctrlr, struct spdk_nvme_c
 		cdata->nvmf_specific.iorcsz = sizeof(struct spdk_nvme_cpl) / 16;
 		cdata->nvmf_specific.icdoff = 0; /* offset starts directly after SQE */
 		cdata->nvmf_specific.ctrattr.ctrlr_model = SPDK_NVMF_CTRLR_MODEL_DYNAMIC;
-		cdata->nvmf_specific.msdbd = 1; /* target supports single SGL in capsule */
+		/* The RDMA transport supports up to SPDK_NVMF_MAX_SGL_ENTRIES descriptors. */
+		if (transport->ops->type == SPDK_NVME_TRANSPORT_RDMA) {
+			cdata->nvmf_specific.msdbd = SPDK_NVMF_MAX_SGL_ENTRIES;
+		} else {
+			cdata->nvmf_specific.msdbd = 1;
+		}
 
 		/* TODO: this should be set by the transport */
 		cdata->nvmf_specific.ioccsz += transport->opts.in_capsule_data_size / 16;
@@ -2050,6 +2112,43 @@ spdk_nvmf_ctrlr_async_event_ns_notice(struct spdk_nvmf_ctrlr *ctrlr)
 }
 
 void
+spdk_nvmf_ctrlr_async_event_reservation_notification(struct spdk_nvmf_ctrlr *ctrlr)
+{
+	struct spdk_nvmf_request *req;
+	struct spdk_nvme_cpl *rsp;
+	union spdk_nvme_async_event_completion event = {0};
+
+	if (!ctrlr->num_avail_log_pages) {
+		return;
+	}
+	event.bits.async_event_type = SPDK_NVME_ASYNC_EVENT_TYPE_IO;
+	event.bits.async_event_info = SPDK_NVME_ASYNC_EVENT_RESERVATION_LOG_AVAIL;
+	event.bits.log_page_identifier = SPDK_NVME_LOG_RESERVATION_NOTIFICATION;
+
+	/* If there is no outstanding AER request, queue the event.  Then
+	 * if an AER is later submitted, this event can be sent as a
+	 * response.
+	 */
+	if (!ctrlr->aer_req) {
+		if (ctrlr->reservation_event.bits.async_event_type ==
+		    SPDK_NVME_ASYNC_EVENT_TYPE_IO) {
+			return;
+		}
+
+		ctrlr->reservation_event.raw = event.raw;
+		return;
+	}
+
+	req = ctrlr->aer_req;
+	rsp = &req->rsp->nvme_cpl;
+
+	rsp->cdw0 = event.raw;
+
+	spdk_nvmf_request_complete(req);
+	ctrlr->aer_req = NULL;
+}
+
+void
 spdk_nvmf_qpair_free_aer(struct spdk_nvmf_qpair *qpair)
 {
 	struct spdk_nvmf_ctrlr *ctrlr = qpair->ctrlr;
@@ -2075,6 +2174,171 @@ spdk_nvmf_ctrlr_abort_aer(struct spdk_nvmf_ctrlr *ctrlr)
 	ctrlr->aer_req = NULL;
 }
 
+static void
+_nvmf_ctrlr_add_reservation_log(void *ctx)
+{
+	struct spdk_nvmf_reservation_log *log = (struct spdk_nvmf_reservation_log *)ctx;
+	struct spdk_nvmf_ctrlr *ctrlr = log->ctrlr;
+
+	ctrlr->log_page_count++;
+
+	/* Maximum number of queued log pages is 255 */
+	if (ctrlr->num_avail_log_pages == 0xff) {
+		struct spdk_nvmf_reservation_log *entry;
+		entry = TAILQ_LAST(&ctrlr->log_head, log_page_head);
+		entry->log.log_page_count = ctrlr->log_page_count;
+		free(log);
+		return;
+	}
+
+	log->log.log_page_count = ctrlr->log_page_count;
+	log->log.num_avail_log_pages = ctrlr->num_avail_log_pages++;
+	TAILQ_INSERT_TAIL(&ctrlr->log_head, log, link);
+
+	spdk_nvmf_ctrlr_async_event_reservation_notification(ctrlr);
+}
+
+void
+spdk_nvmf_ctrlr_reservation_notice_log(struct spdk_nvmf_ctrlr *ctrlr,
+				       struct spdk_nvmf_ns *ns,
+				       enum spdk_nvme_reservation_notification_log_page_type type)
+{
+	struct spdk_nvmf_reservation_log *log;
+
+	switch (type) {
+	case SPDK_NVME_RESERVATION_LOG_PAGE_EMPTY:
+		return;
+	case SPDK_NVME_REGISTRATION_PREEMPTED:
+		if (ns->mask & SPDK_NVME_REGISTRATION_PREEMPTED_MASK) {
+			return;
+		}
+		break;
+	case SPDK_NVME_RESERVATION_RELEASED:
+		if (ns->mask & SPDK_NVME_RESERVATION_RELEASED_MASK) {
+			return;
+		}
+		break;
+	case SPDK_NVME_RESERVATION_PREEMPTED:
+		if (ns->mask & SPDK_NVME_RESERVATION_PREEMPTED_MASK) {
+			return;
+		}
+		break;
+	default:
+		return;
+	}
+
+	log = calloc(1, sizeof(*log));
+	if (!log) {
+		SPDK_ERRLOG("Alloc log page failed, ignore the log\n");
+		return;
+	}
+	log->ctrlr = ctrlr;
+	log->log.type = type;
+	log->log.nsid = ns->nsid;
+
+	spdk_thread_send_msg(ctrlr->thread, _nvmf_ctrlr_add_reservation_log, log);
+}
+
+/* Check from subsystem poll group's namespace information data structure */
+static bool
+nvmf_ns_info_ctrlr_is_registrant(struct spdk_nvmf_subsystem_pg_ns_info *ns_info,
+				 struct spdk_nvmf_ctrlr *ctrlr)
+{
+	uint32_t i;
+
+	for (i = 0; i < SPDK_NVMF_MAX_NUM_REGISTRANTS; i++) {
+		if (!spdk_uuid_compare(&ns_info->reg_hostid[i], &ctrlr->hostid)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/*
+ * Check the NVMe command is permitted or not for current controller(Host).
+ */
+static int
+nvmf_ns_reservation_request_check(struct spdk_nvmf_subsystem_pg_ns_info *ns_info,
+				  struct spdk_nvmf_ctrlr *ctrlr,
+				  struct spdk_nvmf_request *req)
+{
+	struct spdk_nvme_cmd *cmd = &req->cmd->nvme_cmd;
+	enum spdk_nvme_reservation_type rtype = ns_info->rtype;
+	uint8_t status = SPDK_NVME_SC_SUCCESS;
+	uint8_t racqa;
+	bool is_registrant;
+
+	/* No valid reservation */
+	if (!rtype) {
+		return 0;
+	}
+
+	is_registrant = nvmf_ns_info_ctrlr_is_registrant(ns_info, ctrlr);
+	/* All registrants type and current ctrlr is a valid registrant */
+	if ((rtype == SPDK_NVME_RESERVE_WRITE_EXCLUSIVE_ALL_REGS ||
+	     rtype == SPDK_NVME_RESERVE_EXCLUSIVE_ACCESS_ALL_REGS) && is_registrant) {
+		return 0;
+	} else if (!spdk_uuid_compare(&ns_info->holder_id, &ctrlr->hostid)) {
+		return 0;
+	}
+
+	/* Non-holder for current controller */
+	switch (cmd->opc) {
+	case SPDK_NVME_OPC_READ:
+	case SPDK_NVME_OPC_COMPARE:
+		if (rtype == SPDK_NVME_RESERVE_EXCLUSIVE_ACCESS) {
+			status = SPDK_NVME_SC_RESERVATION_CONFLICT;
+			goto exit;
+		}
+		if ((rtype == SPDK_NVME_RESERVE_EXCLUSIVE_ACCESS_REG_ONLY ||
+		     rtype == SPDK_NVME_RESERVE_EXCLUSIVE_ACCESS_ALL_REGS) && !is_registrant) {
+			status = SPDK_NVME_SC_RESERVATION_CONFLICT;
+			goto exit;
+		}
+		break;
+	case SPDK_NVME_OPC_FLUSH:
+	case SPDK_NVME_OPC_WRITE:
+	case SPDK_NVME_OPC_WRITE_UNCORRECTABLE:
+	case SPDK_NVME_OPC_WRITE_ZEROES:
+	case SPDK_NVME_OPC_DATASET_MANAGEMENT:
+		if (rtype == SPDK_NVME_RESERVE_WRITE_EXCLUSIVE ||
+		    rtype == SPDK_NVME_RESERVE_EXCLUSIVE_ACCESS) {
+			status = SPDK_NVME_SC_RESERVATION_CONFLICT;
+			goto exit;
+		}
+		if (!is_registrant) {
+			status = SPDK_NVME_SC_RESERVATION_CONFLICT;
+			goto exit;
+		}
+		break;
+	case SPDK_NVME_OPC_RESERVATION_ACQUIRE:
+	case SPDK_NVME_OPC_RESERVATION_RELEASE:
+		racqa = cmd->cdw10 & 0x7u;
+		if (cmd->opc == SPDK_NVME_OPC_RESERVATION_ACQUIRE &&
+		    racqa == SPDK_NVME_RESERVE_ACQUIRE) {
+			status = SPDK_NVME_SC_RESERVATION_CONFLICT;
+			goto exit;
+		}
+		if (!is_registrant) {
+			status = SPDK_NVME_SC_RESERVATION_CONFLICT;
+			goto exit;
+		}
+		break;
+	default:
+		break;
+	}
+
+exit:
+	req->rsp->nvme_cpl.status.sct = SPDK_NVME_SCT_GENERIC;
+	req->rsp->nvme_cpl.status.sc = status;
+	if (status == SPDK_NVME_SC_RESERVATION_CONFLICT) {
+		return -EPERM;
+	}
+
+	return 0;
+}
+
 int
 spdk_nvmf_ctrlr_process_io_cmd(struct spdk_nvmf_request *req)
 {
@@ -2087,6 +2351,7 @@ spdk_nvmf_ctrlr_process_io_cmd(struct spdk_nvmf_request *req)
 	struct spdk_nvmf_ctrlr *ctrlr = req->qpair->ctrlr;
 	struct spdk_nvme_cmd *cmd = &req->cmd->nvme_cmd;
 	struct spdk_nvme_cpl *response = &req->rsp->nvme_cpl;
+	struct spdk_nvmf_subsystem_pg_ns_info *ns_info;
 
 	/* pre-set response details for this command */
 	response->status.sc = SPDK_NVME_SC_SUCCESS;
@@ -2114,9 +2379,16 @@ spdk_nvmf_ctrlr_process_io_cmd(struct spdk_nvmf_request *req)
 		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
 	}
 
+	ns_info = &group->sgroups[ctrlr->subsys->id].ns_info[nsid - 1];
+	if (nvmf_ns_reservation_request_check(ns_info, ctrlr, req)) {
+		SPDK_DEBUGLOG(SPDK_LOG_NVMF, "Reservation Conflict for nsid %u, opcode %u\n",
+			      cmd->nsid, cmd->opc);
+		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+	}
+
 	bdev = ns->bdev;
 	desc = ns->desc;
-	ch = group->sgroups[ctrlr->subsys->id].channels[nsid - 1];
+	ch = ns_info->channel;
 	switch (cmd->opc) {
 	case SPDK_NVME_OPC_READ:
 		return spdk_nvmf_bdev_ctrlr_read_cmd(bdev, desc, ch, req);

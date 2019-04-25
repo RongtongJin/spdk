@@ -65,6 +65,10 @@ if grep -q '#define SPDK_CONFIG_CRYPTO 1' $rootdir/include/spdk/config.h; then
 	$valgrind $testdir/lib/bdev/crypto.c/crypto_ut
 fi
 
+if grep -q '#define SPDK_CONFIG_REDUCE 1' $rootdir/include/spdk/config.h; then
+        $valgrind $testdir/lib/bdev/compress.c/compress_ut
+fi
+
 if grep -q '#define SPDK_CONFIG_PMDK 1' $rootdir/include/spdk/config.h; then
 	$valgrind $testdir/lib/bdev/pmem/bdev_pmem_ut
 fi
@@ -123,6 +127,8 @@ $valgrind $testdir/lib/scsi/scsi_bdev.c/scsi_bdev_ut
 
 $valgrind $testdir/lib/lvol/lvol.c/lvol_ut
 
+$valgrind $testdir/lib/notify/notify.c/notify_ut
+
 $valgrind $testdir/lib/iscsi/conn.c/conn_ut
 $valgrind $testdir/lib/iscsi/param.c/param_ut
 $valgrind $testdir/lib/iscsi/tgt_node.c/tgt_node_ut $testdir/lib/iscsi/tgt_node.c/tgt_node.conf
@@ -155,6 +161,8 @@ $valgrind $testdir/lib/ftl/ftl_ppa/ftl_ppa_ut
 $valgrind $testdir/lib/ftl/ftl_band.c/ftl_band_ut
 $valgrind $testdir/lib/ftl/ftl_reloc.c/ftl_reloc_ut
 $valgrind $testdir/lib/ftl/ftl_wptr/ftl_wptr_ut
+$valgrind $testdir/lib/ftl/ftl_md/ftl_md_ut
+$valgrind $testdir/lib/ftl/ftl_io.c/ftl_io_ut
 fi
 
 # local unit test coverage

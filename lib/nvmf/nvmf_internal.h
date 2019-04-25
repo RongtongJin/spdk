@@ -112,14 +112,29 @@ struct spdk_nvmf_transport_poll_group {
 	TAILQ_ENTRY(spdk_nvmf_transport_poll_group)			link;
 };
 
+/* Maximum number of registrants supported per namespace */
+#define SPDK_NVMF_MAX_NUM_REGISTRANTS		16
+
+struct spdk_nvmf_subsystem_pg_ns_info {
+	struct spdk_io_channel		*channel;
+	/* current reservation key, no reservation if the value is 0 */
+	uint64_t			crkey;
+	/* reservation type */
+	enum spdk_nvme_reservation_type	rtype;
+	/* Host ID which holds the reservation */
+	struct spdk_uuid		holder_id;
+	/* Host ID for the registrants with the namespace */
+	struct spdk_uuid		reg_hostid[SPDK_NVMF_MAX_NUM_REGISTRANTS];
+};
+
 struct spdk_nvmf_subsystem_poll_group {
-	/* Array of channels for each namespace indexed by nsid - 1 */
-	struct spdk_io_channel	**channels;
-	uint32_t		num_channels;
+	/* Array of namespace information for each namespace indexed by nsid - 1 */
+	struct spdk_nvmf_subsystem_pg_ns_info	*ns_info;
+	uint32_t				num_ns;
 
-	enum spdk_nvmf_subsystem_state state;
+	enum spdk_nvmf_subsystem_state		state;
 
-	TAILQ_HEAD(, spdk_nvmf_request)	queued;
+	TAILQ_HEAD(, spdk_nvmf_request)		queued;
 };
 
 struct spdk_nvmf_poll_group {
@@ -227,6 +242,15 @@ struct spdk_nvmf_ctrlr_feat {
 };
 
 /*
+ * NVMf reservation notificaton log page.
+ */
+struct spdk_nvmf_reservation_log {
+	struct spdk_nvme_reservation_notification_log	log;
+	TAILQ_ENTRY(spdk_nvmf_reservation_log)		link;
+	struct spdk_nvmf_ctrlr				*ctrlr;
+};
+
+/*
  * This structure represents an NVMe-oF controller,
  * which is like a "session" in networking terms.
  */
@@ -249,10 +273,14 @@ struct spdk_nvmf_ctrlr {
 
 	struct spdk_nvmf_request *aer_req;
 	union spdk_nvme_async_event_completion notice_event;
+	union spdk_nvme_async_event_completion reservation_event;
 	struct spdk_uuid  hostid;
 
 	uint16_t changed_ns_list_count;
 	struct spdk_nvme_ns_list changed_ns_list;
+	uint64_t log_page_count;
+	uint8_t num_avail_log_pages;
+	TAILQ_HEAD(log_page_head, spdk_nvmf_reservation_log) log_head;
 
 	/* Time to trigger keep-alive--poller_time = now_tick + period */
 	uint64_t last_keep_alive_tick;
@@ -274,6 +302,7 @@ struct spdk_nvmf_subsystem {
 	struct spdk_nvmf_tgt			*tgt;
 
 	char sn[SPDK_NVME_CTRLR_SN_LEN + 1];
+	char mn[SPDK_NVME_CTRLR_MN_LEN + 1];
 
 	/* Array of pointers to namespaces of size max_nsid indexed by nsid - 1 */
 	struct spdk_nvmf_ns			**ns;
@@ -344,7 +373,11 @@ void spdk_nvmf_subsystem_remove_ctrlr(struct spdk_nvmf_subsystem *subsystem,
 struct spdk_nvmf_ctrlr *spdk_nvmf_subsystem_get_ctrlr(struct spdk_nvmf_subsystem *subsystem,
 		uint16_t cntlid);
 int spdk_nvmf_ctrlr_async_event_ns_notice(struct spdk_nvmf_ctrlr *ctrlr);
+void spdk_nvmf_ctrlr_async_event_reservation_notification(struct spdk_nvmf_ctrlr *ctrlr);
 void spdk_nvmf_ns_reservation_request(void *ctx);
+void spdk_nvmf_ctrlr_reservation_notice_log(struct spdk_nvmf_ctrlr *ctrlr,
+		struct spdk_nvmf_ns *ns,
+		enum spdk_nvme_reservation_notification_log_page_type type);
 
 /*
  * Abort aer is sent on a per controller basis and sends a completion for the aer to the host.

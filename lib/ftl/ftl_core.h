@@ -43,6 +43,7 @@
 #include "spdk_internal/log.h"
 #include "spdk/queue.h"
 #include "spdk/ftl.h"
+#include "spdk/bdev.h"
 
 #include "ftl_ppa.h"
 #include "ftl_io.h"
@@ -136,6 +137,8 @@ struct spdk_ftl_dev {
 	struct spdk_nvme_ns			*ns;
 	/* NVMe transport ID */
 	struct spdk_nvme_transport_id		trid;
+	/* Write buffer cache */
+	struct spdk_bdev_desc			*cache_bdev_desc;
 
 	/* LBA map memory pool */
 	struct spdk_mempool			*lba_pool;
@@ -198,8 +201,10 @@ struct spdk_ftl_dev {
 	/* Current user write limit */
 	int					limit;
 
-	/* Inflight io operations */
+	/* Inflight IO operations */
 	uint32_t				num_inflight;
+	/* Queue of IO awaiting retry */
+	TAILQ_HEAD(, ftl_io)			retry_queue;
 
 	/* Manages data relocation */
 	struct ftl_reloc			*reloc;

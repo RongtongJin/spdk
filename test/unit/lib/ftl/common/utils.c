@@ -56,7 +56,7 @@ test_init_ftl_dev(const struct spdk_ocssd_geometry_data *geo,
 	dev->xfer_size = geo->ws_opt;
 	dev->geo = *geo;
 	dev->range = *range;
-	dev->core_thread.thread = spdk_thread_create("unit_test_thread");
+	dev->core_thread.thread = spdk_thread_create("unit_test_thread", NULL);
 	spdk_set_thread(dev->core_thread.thread);
 
 	dev->bands = calloc(geo->num_chk, sizeof(*dev->bands));
@@ -133,6 +133,7 @@ test_free_ftl_band(struct ftl_band *band)
 	spdk_bit_array_free(&band->md.vld_map);
 	free(band->chunk_buf);
 	free(band->md.lba_map);
+	spdk_dma_free(band->md.dma_buf);
 }
 
 uint64_t

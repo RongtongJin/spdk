@@ -40,6 +40,7 @@
 #include "spdk/string.h"
 #include "spdk/likely.h"
 #include "spdk/util.h"
+#include "spdk/string.h"
 #include "spdk/ftl.h"
 #include "spdk_internal/log.h"
 
@@ -54,6 +55,8 @@ struct ftl_bdev {
 	struct nvme_bdev_ctrlr		*ctrlr;
 
 	struct spdk_ftl_dev		*dev;
+
+	struct spdk_bdev_desc		*cache_bdev_desc;
 
 	ftl_bdev_init_fn		init_cb;
 
@@ -86,6 +89,12 @@ struct ftl_bdev_io {
 	struct spdk_thread		*orig_thread;
 };
 
+struct ftl_deferred_init {
+	struct ftl_bdev_init_opts	opts;
+
+	LIST_ENTRY(ftl_deferred_init)	entry;
+};
+
 typedef void (*bdev_ftl_finish_fn)(void);
 
 static LIST_HEAD(, ftl_bdev)		g_ftl_bdevs = LIST_HEAD_INITIALIZER(g_ftl_bdevs);
@@ -93,9 +102,11 @@ static bdev_ftl_finish_fn		g_finish_cb;
 static size_t				g_num_conf_bdevs;
 static size_t				g_num_init_bdevs;
 static pthread_mutex_t			g_ftl_bdev_lock;
+static LIST_HEAD(, ftl_deferred_init)	g_deferred_init;
 
 static int bdev_ftl_initialize(void);
 static void bdev_ftl_finish(void);
+static void bdev_ftl_examine(struct spdk_bdev *);
 
 static int
 bdev_ftl_get_ctx_size(void)
@@ -109,6 +120,7 @@ static struct spdk_bdev_module g_ftl_if = {
 	.async_fini	= true,
 	.module_init	= bdev_ftl_initialize,
 	.module_fini	= bdev_ftl_finish,
+	.examine_disk	= bdev_ftl_examine,
 	.get_ctx_size	= bdev_ftl_get_ctx_size,
 };
 
@@ -182,6 +194,11 @@ bdev_ftl_free_cb(void *ctx, int status)
 	spdk_io_device_unregister(ftl_bdev, NULL);
 
 	bdev_ftl_remove_ctrlr(ftl_bdev->ctrlr);
+
+	if (ftl_bdev->cache_bdev_desc) {
+		spdk_bdev_module_release_bdev(spdk_bdev_desc_get_bdev(ftl_bdev->cache_bdev_desc));
+		spdk_bdev_close(ftl_bdev->cache_bdev_desc);
+	}
 
 	spdk_bdev_destruct_done(&ftl_bdev->bdev, status);
 	free(ftl_bdev->bdev.name);
@@ -391,7 +408,7 @@ bdev_ftl_write_config_json(struct spdk_bdev *bdev, struct spdk_json_write_ctx *w
 {
 	struct ftl_bdev *ftl_bdev = bdev->ctxt;
 	struct spdk_ftl_attrs attrs;
-	const char *trtype_str;
+	const char *trtype_str, *cache_bdev;
 	char uuid[SPDK_UUID_STRING_LEN];
 
 	spdk_ftl_dev_get_attrs(ftl_bdev->dev, &attrs);
@@ -407,15 +424,19 @@ bdev_ftl_write_config_json(struct spdk_bdev *bdev, struct spdk_json_write_ctx *w
 	if (trtype_str) {
 		spdk_json_write_named_string(w, "trtype", trtype_str);
 	}
-	spdk_json_write_named_string(w, "traddr", ftl_bdev->ctrlr->trid.traddr);
 
+	spdk_json_write_named_string(w, "traddr", ftl_bdev->ctrlr->trid.traddr);
 	spdk_json_write_named_string_fmt(w, "punits", "%d-%d", attrs.range.begin, attrs.range.end);
 
 	spdk_uuid_fmt_lower(uuid, sizeof(uuid), &attrs.uuid);
 	spdk_json_write_named_string(w, "uuid", uuid);
 
-	spdk_json_write_object_end(w);
+	if (ftl_bdev->cache_bdev_desc) {
+		cache_bdev = spdk_bdev_get_name(spdk_bdev_desc_get_bdev(ftl_bdev->cache_bdev_desc));
+		spdk_json_write_named_string(w, "cache", cache_bdev);
+	}
 
+	spdk_json_write_object_end(w);
 	spdk_json_write_object_end(w);
 }
 
@@ -481,74 +502,112 @@ out:
 }
 
 static int
+bdev_ftl_defer_init(struct ftl_bdev_init_opts *opts)
+{
+	struct ftl_deferred_init *init;
+
+	init = calloc(1, sizeof(*init));
+	if (!init) {
+		return -ENOMEM;
+	}
+
+	init->opts = *opts;
+	LIST_INSERT_HEAD(&g_deferred_init, init, entry);
+
+	return 0;
+}
+
+static int
 bdev_ftl_read_bdev_config(struct spdk_conf_section *sp,
 			  struct ftl_bdev_init_opts *opts,
 			  size_t *num_bdevs)
 {
-	const char *val;
-	size_t i;
-	int rc = 0;
+	const char *val, *trid;
+	int i, rc = 0, num_deferred = 0;
 
 	*num_bdevs = 0;
 
 	for (i = 0; i < FTL_MAX_BDEVS; i++, opts++) {
-		val = spdk_conf_section_get_nmval(sp, "TransportID", i, 0);
+		trid = val = spdk_conf_section_get_nmval(sp, "TransportID", i, 0);
 		if (!val) {
 			break;
 		}
 
 		rc = spdk_nvme_transport_id_parse(&opts->trid, val);
 		if (rc < 0) {
-			SPDK_ERRLOG("Unable to parse TransportID: %s\n", val);
+			SPDK_ERRLOG("Unable to parse TransportID: %s\n", trid);
 			rc = -1;
 			break;
 		}
 
 		if (opts->trid.trtype != SPDK_NVME_TRANSPORT_PCIE) {
-			SPDK_ERRLOG("Unsupported transport type\n");
+			SPDK_ERRLOG("Unsupported transport type for TransportID: %s\n", trid);
 			continue;
 		}
 
-		opts->mode = SPDK_FTL_MODE_CREATE;
-
 		val = spdk_conf_section_get_nmval(sp, "TransportID", i, 1);
 		if (!val) {
-			SPDK_ERRLOG("No name provided for TransportID\n");
+			SPDK_ERRLOG("No name provided for TransportID: %s\n", trid);
 			rc = -1;
 			break;
 		}
+
 		opts->name = val;
 
 		val = spdk_conf_section_get_nmval(sp, "TransportID", i, 2);
 		if (!val) {
-			SPDK_ERRLOG("No punit range provided for TransportID\n");
+			SPDK_ERRLOG("No punit range provided for TransportID: %s\n", trid);
 			rc = -1;
 			break;
 		}
 
 		if (bdev_ftl_parse_punits(&opts->range, val)) {
-			SPDK_ERRLOG("Invalid punit range\n");
+			SPDK_ERRLOG("Invalid punit range for TransportID: %s\n", trid);
 			rc = -1;
 			break;
 		}
 
 		val = spdk_conf_section_get_nmval(sp, "TransportID", i, 3);
 		if (!val) {
-			continue;
-		}
-
-		rc = spdk_uuid_parse(&opts->uuid, val);
-		if (rc < 0) {
-			SPDK_ERRLOG("Failed to parse uuid: %s\n", val);
+			SPDK_ERRLOG("No UUID provided for TransportID: %s\n", trid);
 			rc = -1;
 			break;
 		}
 
-		opts->mode = 0;
+		rc = spdk_uuid_parse(&opts->uuid, val);
+		if (rc < 0) {
+			SPDK_ERRLOG("Failed to parse uuid: %s for TransportID: %s\n", val, trid);
+			rc = -1;
+			break;
+		}
+
+		if (spdk_mem_all_zero(&opts->uuid, sizeof(opts->uuid))) {
+			opts->mode = SPDK_FTL_MODE_CREATE;
+		} else {
+			opts->mode = 0;
+		}
+
+		val = spdk_conf_section_get_nmval(sp, "TransportID", i, 4);
+		if (!val) {
+			continue;
+		}
+
+		opts->cache_bdev = val;
+		if (!spdk_bdev_get_by_name(val)) {
+			SPDK_INFOLOG(SPDK_LOG_BDEV_FTL, "Deferring bdev %s initialization\n", opts->name);
+
+			if (bdev_ftl_defer_init(opts)) {
+				SPDK_ERRLOG("Unable to initialize bdev %s\n", opts->name);
+				rc = -1;
+				break;
+			}
+
+			num_deferred++;
+		}
 	}
 
 	if (!rc) {
-		*num_bdevs = i;
+		*num_bdevs = i - num_deferred;
 	}
 
 	return rc;
@@ -602,6 +661,12 @@ bdev_ftl_io_channel_destroy_cb(void *io_device, void *ctx_buf)
 	spdk_ring_free(ch->ring);
 	spdk_poller_unregister(&ch->poller);
 	spdk_put_io_channel(ch->ioch);
+}
+
+static void
+bdev_ftl_cache_removed_cb(void *ctx)
+{
+	assert(0 && "Removed cached bdev\n");
 }
 
 static void
@@ -665,6 +730,11 @@ error_unregister:
 error_dev:
 	bdev_ftl_remove_ctrlr(ftl_bdev->ctrlr);
 
+	if (ftl_bdev->cache_bdev_desc) {
+		spdk_bdev_module_release_bdev(spdk_bdev_desc_get_bdev(ftl_bdev->cache_bdev_desc));
+		spdk_bdev_close(ftl_bdev->cache_bdev_desc);
+	}
+
 	free(ftl_bdev->bdev.name);
 	free(ftl_bdev);
 
@@ -672,16 +742,16 @@ error_dev:
 }
 
 static int
-bdev_ftl_create(struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_transport_id *trid,
-		const char *name, struct spdk_ftl_punit_range *range, unsigned int mode,
-		const struct spdk_uuid *uuid, ftl_bdev_init_fn cb, void *cb_arg)
+bdev_ftl_create(struct spdk_nvme_ctrlr *ctrlr, const struct ftl_bdev_init_opts *bdev_opts,
+		ftl_bdev_init_fn cb, void *cb_arg)
 {
 	struct ftl_bdev *ftl_bdev = NULL;
+	struct spdk_bdev *cache_bdev = NULL;
 	struct nvme_bdev_ctrlr *ftl_ctrlr;
 	struct spdk_ftl_dev_init_opts opts = {};
 	int rc;
 
-	ftl_ctrlr = bdev_ftl_add_ctrlr(ctrlr, trid);
+	ftl_ctrlr = bdev_ftl_add_ctrlr(ctrlr, &bdev_opts->trid);
 	if (!ftl_ctrlr) {
 		spdk_nvme_detach(ctrlr);
 		return -ENOMEM;
@@ -694,34 +764,64 @@ bdev_ftl_create(struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_transport_
 		goto error_ctrlr;
 	}
 
-	ftl_bdev->bdev.name = strdup(name);
+	ftl_bdev->bdev.name = strdup(bdev_opts->name);
 	if (!ftl_bdev->bdev.name) {
 		rc = -ENOMEM;
 		goto error_ctrlr;
+	}
+
+	if (bdev_opts->cache_bdev) {
+		cache_bdev = spdk_bdev_get_by_name(bdev_opts->cache_bdev);
+		if (!cache_bdev) {
+			SPDK_ERRLOG("Unable to find bdev: %s\n", bdev_opts->cache_bdev);
+			rc = -ENOENT;
+			goto error_name;
+		}
+
+		if (spdk_bdev_open(cache_bdev, true, bdev_ftl_cache_removed_cb,
+				   ftl_bdev, &ftl_bdev->cache_bdev_desc)) {
+			SPDK_ERRLOG("Unable to open cache bdev: %s\n", bdev_opts->cache_bdev);
+			rc = -EPERM;
+			goto error_name;
+		}
+
+		if (spdk_bdev_module_claim_bdev(cache_bdev, ftl_bdev->cache_bdev_desc, &g_ftl_if)) {
+			SPDK_ERRLOG("Unable to claim cache bdev %s\n", bdev_opts->cache_bdev);
+			spdk_bdev_close(ftl_bdev->cache_bdev_desc);
+			rc = -EPERM;
+			goto error_name;
+		}
 	}
 
 	ftl_bdev->ctrlr = ftl_ctrlr;
 	ftl_bdev->init_cb = cb;
 	ftl_bdev->init_arg = cb_arg;
 
-	opts.conf = NULL;
 	opts.ctrlr = ctrlr;
-	opts.trid = *trid;
-	opts.range = *range;
-	opts.mode = mode;
-	opts.uuid = *uuid;
+	opts.trid = bdev_opts->trid;
+	opts.range = bdev_opts->range;
+	opts.mode = bdev_opts->mode;
+	opts.uuid = bdev_opts->uuid;
 	opts.name = ftl_bdev->bdev.name;
+	opts.cache_bdev_desc = ftl_bdev->cache_bdev_desc;
+	opts.conf = NULL;
+
 	/* TODO: set threads based on config */
 	opts.core_thread = opts.read_thread = spdk_get_thread();
 
 	rc = spdk_ftl_dev_init(&opts, bdev_ftl_create_cb, ftl_bdev);
 	if (rc) {
 		SPDK_ERRLOG("Could not create FTL device\n");
-		goto error_name;
+		goto error_cache;
 	}
 
 	return 0;
 
+error_cache:
+	if (ftl_bdev->cache_bdev_desc) {
+		spdk_bdev_module_release_bdev(cache_bdev);
+		spdk_bdev_close(ftl_bdev->cache_bdev_desc);
+	}
 error_name:
 	free(ftl_bdev->bdev.name);
 error_ctrlr:
@@ -748,8 +848,19 @@ bdev_ftl_bdev_init_done(void)
 static void
 bdev_ftl_init_cb(const struct ftl_bdev_info *info, void *ctx, int status)
 {
+	struct ftl_deferred_init *opts;
+
 	if (status) {
 		SPDK_ERRLOG("Failed to initialize FTL bdev\n");
+	}
+
+	LIST_FOREACH(opts, &g_deferred_init, entry) {
+		if (!strcmp(opts->opts.name, info->name)) {
+			spdk_bdev_module_examine_done(&g_ftl_if);
+			LIST_REMOVE(opts, entry);
+			free(opts);
+			break;
+		}
 	}
 
 	bdev_ftl_bdev_init_done();
@@ -760,6 +871,7 @@ bdev_ftl_initialize_cb(void *ctx, int status)
 {
 	struct spdk_conf_section *sp;
 	struct ftl_bdev_init_opts *opts = NULL;
+	struct ftl_deferred_init *defer_opts;
 	size_t i;
 
 	if (status) {
@@ -783,7 +895,16 @@ bdev_ftl_initialize_cb(void *ctx, int status)
 	}
 
 	for (i = 0; i < g_num_conf_bdevs; ++i) {
-		if (bdev_ftl_init_bdev(&opts[i], bdev_ftl_init_cb, NULL)) {
+		bool defer_init = false;
+
+		LIST_FOREACH(defer_opts, &g_deferred_init, entry) {
+			if (!strcmp(defer_opts->opts.name, opts[i].name)) {
+				defer_init = true;
+				break;
+			}
+		}
+
+		if (!defer_init && bdev_ftl_init_bdev(&opts[i], bdev_ftl_init_cb, NULL)) {
 			SPDK_ERRLOG("Failed to create bdev '%s'\n", opts[i].name);
 			bdev_ftl_bdev_init_done();
 		}
@@ -848,8 +969,7 @@ bdev_ftl_init_bdev(struct ftl_bdev_init_opts *opts, ftl_bdev_init_fn cb, void *c
 	TAILQ_FOREACH(ftl_ctrlr, &g_nvme_bdev_ctrlrs, tailq) {
 		if (!spdk_nvme_transport_id_compare(&ftl_ctrlr->trid, &opts->trid)) {
 			pthread_mutex_unlock(&g_bdev_nvme_mutex);
-			return bdev_ftl_create(ftl_ctrlr->ctrlr, &ftl_ctrlr->trid, opts->name,
-					       &opts->range, opts->mode, &opts->uuid, cb, cb_arg);
+			return bdev_ftl_create(ftl_ctrlr->ctrlr, opts, cb, cb_arg);
 		}
 	}
 
@@ -865,8 +985,29 @@ bdev_ftl_init_bdev(struct ftl_bdev_init_opts *opts, ftl_bdev_init_fn cb, void *c
 		return -EPERM;
 	}
 
-	return bdev_ftl_create(ctrlr, &opts->trid, opts->name, &opts->range,
-			       opts->mode, &opts->uuid, cb, cb_arg);
+	return bdev_ftl_create(ctrlr, opts, cb, cb_arg);
+}
+
+static void
+bdev_ftl_examine(struct spdk_bdev *bdev)
+{
+	struct ftl_deferred_init *opts;
+
+	LIST_FOREACH(opts, &g_deferred_init, entry) {
+		if (spdk_bdev_get_by_name(opts->opts.cache_bdev) == bdev) {
+			if (bdev_ftl_init_bdev(&opts->opts, bdev_ftl_init_cb, NULL)) {
+				SPDK_ERRLOG("Unable to initialize bdev '%s'\n", opts->opts.name);
+				LIST_REMOVE(opts, entry);
+				free(opts);
+				break;
+			}
+
+			/* spdk_bdev_module_examine_done will be called by bdev_ftl_init_cb */
+			return;
+		}
+	}
+
+	spdk_bdev_module_examine_done(&g_ftl_if);
 }
 
 void

@@ -49,7 +49,7 @@
  * include it here.
  */
 #include "../lib/blob/blobstore.h"
-static void cli_start(void *arg1, void *arg2);
+static void cli_start(void *arg1);
 
 static const char *program_name = "blobcli";
 /* default name for .conf file, any name can be used however with -c switch */
@@ -197,7 +197,7 @@ static void
 cli_cleanup(struct cli_context_t *cli_context)
 {
 	if (cli_context->buff) {
-		spdk_dma_free(cli_context->buff);
+		spdk_free(cli_context->buff);
 	}
 	if (cli_context->cli_mode == CLI_MODE_SCRIPT) {
 		int i;
@@ -233,7 +233,7 @@ unload_complete(void *cb_arg, int bserrno)
 		/* when action is CLI_NONE, we know we need to remain in the shell */
 		cli_context->bs = NULL;
 		cli_context->action = CLI_NONE;
-		cli_start(cli_context, NULL);
+		cli_start(cli_context);
 	}
 }
 
@@ -685,8 +685,8 @@ dump_imp_open_cb(void *cb_arg, struct spdk_blob *blob, int bserrno)
 	 * We'll transfer just one io_unit at a time to keep the buffer
 	 * small. This could be bigger of course.
 	 */
-	cli_context->buff = spdk_dma_malloc(cli_context->io_unit_size,
-					    ALIGN_4K, NULL);
+	cli_context->buff = spdk_malloc(cli_context->io_unit_size, ALIGN_4K, NULL,
+					SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
 	if (cli_context->buff == NULL) {
 		printf("Error in allocating memory\n");
 		spdk_blob_close(cli_context->blob, close_cb, cli_context);
@@ -780,8 +780,8 @@ fill_blob_cb(void *arg1, struct spdk_blob *blob, int bserrno)
 	cli_context->blob = blob;
 	cli_context->io_unit_count = 0;
 	cli_context->blob_io_units = spdk_blob_get_num_io_units(cli_context->blob);
-	cli_context->buff = spdk_dma_malloc(cli_context->io_unit_size,
-					    ALIGN_4K, NULL);
+	cli_context->buff = spdk_malloc(cli_context->io_unit_size, ALIGN_4K, NULL,
+					SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
 	if (cli_context->buff == NULL) {
 		unload_bs(cli_context, "Error in allocating memory",
 			  -ENOMEM);
@@ -912,7 +912,7 @@ list_bdevs(struct cli_context_t *cli_context)
 		spdk_app_stop(0);
 	} else {
 		cli_context->action = CLI_NONE;
-		cli_start(cli_context, NULL);
+		cli_start(cli_context);
 	}
 }
 
@@ -973,7 +973,7 @@ spdk_bsdump_done(void *arg, int bserrno)
 		spdk_app_stop(0);
 	} else {
 		cli_context->action = CLI_NONE;
-		cli_start(cli_context, NULL);
+		cli_start(cli_context);
 	}
 }
 
@@ -1424,7 +1424,7 @@ cli_shell(void *arg1, void *arg2)
  * called first.
  */
 static void
-cli_start(void *arg1, void *arg2)
+cli_start(void *arg1)
 {
 	struct cli_context_t *cli_context = arg1;
 

@@ -99,6 +99,9 @@
   # Set the number of shared buffers to be cached per poll group
   #BufCacheSize 32
 
+  # Set the maximum number outstanding I/O per shared receive queue. Relevant only for RDMA transport
+  #MaxSRQDepth 4096
+
 [Transport]
   # Set TCP transport type.
   Type TCP
@@ -159,6 +162,9 @@
   # Set how often the admin queue is polled for asynchronous events.
   # Units in microseconds.
   AdminPollRate 100000
+  # Set how often I/O queues are polled from completions.
+  # Units in microseconds.
+  IOPollRate 0
 
   # Disable handling of hotplug (runtime insert and remove) events,
   # users can set to Yes if want to enable it.
@@ -187,8 +193,12 @@
   StripSize 64
   # Number of pre-configured bdevs.
   NumDevices 2
-  # Pre-configured bdevs name.
+  # Pre-configured bdevs name with Nvme.
   Devices Nvme2n1 Nvme3n1
+  # Pre-configured bdevs name with Malloc.
+  #Devices Malloc0 Malloc1
+  # Pre-configured bdevs name with AIO.
+  #Devices AIO0 AIO1
 
 # Define an NVMf Subsystem.
 # - NQN is required and must be unique.
@@ -216,6 +226,7 @@
   AllowAnyHost No
   Host nqn.2016-06.io.spdk:init
   SN SPDK00000000000001
+  MN SPDK_Controller1
   MaxNamespaces 20
   Namespace Nvme0n1 1
   Namespace Nvme1n1 2
@@ -229,6 +240,7 @@
   AllowAnyHost No
   Host nqn.2016-06.io.spdk:init
   SN SPDK00000000000002
+  MN SPDK_Controller2
   Namespace Malloc0
   Namespace Malloc1
   Namespace AIO0

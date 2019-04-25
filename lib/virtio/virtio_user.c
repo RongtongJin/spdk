@@ -43,6 +43,7 @@
 
 #include "virtio_user/vhost.h"
 #include "spdk/string.h"
+#include "spdk/config.h"
 
 #include "spdk_internal/virtio.h"
 
@@ -463,7 +464,8 @@ virtio_user_setup_queue(struct virtio_dev *vdev, struct virtqueue *vq)
 		return -errno;
 	}
 
-	queue_mem = spdk_dma_zmalloc(vq->vq_ring_size, VIRTIO_PCI_VRING_ALIGN, NULL);
+	queue_mem = spdk_zmalloc(vq->vq_ring_size, VIRTIO_PCI_VRING_ALIGN, NULL,
+				 SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
 	if (queue_mem == NULL) {
 		close(kickfd);
 		close(callfd);
@@ -481,7 +483,7 @@ virtio_user_setup_queue(struct virtio_dev *vdev, struct virtqueue *vq)
 		if (rc < 0) {
 			SPDK_ERRLOG("failed to send VHOST_USER_SET_VRING_ENABLE: %s\n",
 				    spdk_strerror(-rc));
-			spdk_dma_free(queue_mem);
+			spdk_free(queue_mem);
 			return -rc;
 		}
 	}
@@ -522,7 +524,7 @@ virtio_user_del_queue(struct virtio_dev *vdev, struct virtqueue *vq)
 	dev->callfds[vq->vq_queue_index] = -1;
 	dev->kickfds[vq->vq_queue_index] = -1;
 
-	spdk_dma_free(vq->vq_ring_virt_mem);
+	spdk_free(vq->vq_ring_virt_mem);
 }
 
 static void

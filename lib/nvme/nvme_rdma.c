@@ -209,7 +209,7 @@ static void
 nvme_rdma_req_complete(struct nvme_request *req,
 		       struct spdk_nvme_cpl *rsp)
 {
-	nvme_complete_request(req, rsp);
+	nvme_complete_request(req->cb_fn, req->cb_arg, req, rsp);
 	nvme_free_request(req);
 }
 
@@ -1156,7 +1156,9 @@ nvme_rdma_build_sgl_inline_request(struct nvme_rdma_qpair *rqpair,
 			return -1;
 		}
 
-		assert(length <= remaining_payload);
+		if (length > remaining_payload) {
+			length = remaining_payload;
+		}
 
 		requested_size = length;
 		mr = (struct ibv_mr *)spdk_mem_map_translate(rqpair->mr_map->map, (uint64_t)virt_addr,
@@ -1381,22 +1383,22 @@ nvme_rdma_ctrlr_scan(struct spdk_nvme_probe_ctx *probe_ctx,
 		return -1;
 	}
 
-	/* get the cdata info */
-	rc = nvme_ctrlr_cmd_identify(discovery_ctrlr, SPDK_NVME_IDENTIFY_CTRLR, 0, 0,
-				     &discovery_ctrlr->cdata, sizeof(discovery_ctrlr->cdata),
-				     nvme_completion_poll_cb, &status);
-	if (rc != 0) {
-		SPDK_ERRLOG("Failed to identify cdata\n");
-		return rc;
-	}
-
-	if (spdk_nvme_wait_for_completion(discovery_ctrlr->adminq, &status)) {
-		SPDK_ERRLOG("nvme_identify_controller failed!\n");
-		return -ENXIO;
-	}
-
 	/* Direct attach through spdk_nvme_connect() API */
 	if (direct_connect == true) {
+		/* get the cdata info */
+		rc = nvme_ctrlr_cmd_identify(discovery_ctrlr, SPDK_NVME_IDENTIFY_CTRLR, 0, 0,
+					     &discovery_ctrlr->cdata, sizeof(discovery_ctrlr->cdata),
+					     nvme_completion_poll_cb, &status);
+		if (rc != 0) {
+			SPDK_ERRLOG("Failed to identify cdata\n");
+			return rc;
+		}
+
+		if (spdk_nvme_wait_for_completion(discovery_ctrlr->adminq, &status)) {
+			SPDK_ERRLOG("nvme_identify_controller failed!\n");
+			return -ENXIO;
+		}
+
 		/* Set the ready state to skip the normal init process */
 		discovery_ctrlr->state = NVME_CTRLR_STATE_READY;
 		nvme_ctrlr_connected(probe_ctx, discovery_ctrlr);

@@ -119,7 +119,12 @@ struct spdk_bdev_module {
 	 * First notification that a bdev should be examined by a virtual bdev module.
 	 * Virtual bdev modules may use this to examine newly-added bdevs and automatically
 	 * create their own vbdevs, but no I/O to device can be send to bdev at this point.
-	 * Only vbdevs based on config files can be created here.
+	 * Only vbdevs based on config files can be created here. This callback must make
+	 * its decision to claim the module synchronously.
+	 * It must also call spdk_bdev_module_examine_done() before returning. If the module
+	 * needs to perform asynchronous operations such as I/O after claiming the bdev,
+	 * it may define an examine_disk callback.  The examine_disk callback will then
+	 * be called immediately after the examine_config callback returns.
 	 */
 	void (*examine_config)(struct spdk_bdev *bdev);
 
@@ -448,6 +453,17 @@ struct spdk_bdev_io {
 
 			/** count of outstanding batched split I/Os */
 			uint32_t split_outstanding;
+
+			struct {
+				/** Whether the buffer should be populated with the real data */
+				uint8_t populate : 1;
+
+				/** Whether the buffer should be committed back to disk */
+				uint8_t commit : 1;
+
+				/** True if this request is in the 'start' phase of zcopy. False if in 'end'. */
+				uint8_t start : 1;
+			} zcopy;
 		} bdev;
 		struct {
 			/** Channel reference held while messages for this reset are in progress. */
@@ -574,7 +590,10 @@ struct spdk_bdev_io {
 int spdk_bdev_register(struct spdk_bdev *bdev);
 
 /**
- * Unregister a bdev
+ * Start unregistering a bdev. This will notify each currently open descriptor
+ * on this bdev about the hotremoval in hopes that the upper layers will stop
+ * using this bdev and manually close all the descriptors with spdk_bdev_close().
+ * The actual bdev unregistration may be deferred until all descriptors are closed.
  *
  * \param bdev Block device to unregister.
  * \param cb_fn Callback function to be called when the unregister is complete.
@@ -597,6 +616,10 @@ void spdk_bdev_destruct_done(struct spdk_bdev *bdev, int bdeverrno);
 
 /**
  * Register a virtual bdev.
+ *
+ * This function is deprecated.  Users should call spdk_bdev_register instead.
+ * The bdev layer currently makes no use of the base_bdevs array, so switching
+ * to spdk_bdev_register results in no loss of functionality.
  *
  * \param vbdev Virtual bdev to register.
  * \param base_bdevs Array of bdevs upon which this vbdev is based.

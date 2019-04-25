@@ -208,6 +208,7 @@ def get_nvme_bdev_json(config, section):
         ["TimeoutuSec", "timeout_us", int, 0],
         ["AdminPollRate", "nvme_adminq_poll_period_us", int, 1000000],
         ["ActionOnTimeout", "action_on_timeout", str, "none"],
+        ["IOPollRate", "nvme_ioq_poll_period_us", int, 0],
         ["HotplugEnable", "enable", bool, False],
         ["AdminPollRate", "period_us", int, 1000]
     ]
@@ -234,13 +235,13 @@ def get_nvme_bdev_json(config, section):
         else:
             set_param(params, option, value)
     params[3][3] = params[3][3].lower()
-    params[5][3] = params[5][3] * 100
+    params[6][3] = params[6][3] * 100
     nvme_json.append({
-        "params": to_json_params(params[4:6]),
+        "params": to_json_params(params[5:7]),
         "method": "set_bdev_nvme_hotplug"
     })
     nvme_json.append({
-        "params": to_json_params(params[0:4]),
+        "params": to_json_params(params[0:5]),
         "method": "set_bdev_nvme_options"
     })
     return nvme_json
@@ -318,6 +319,7 @@ def get_nvmf_subsystem_json(config, section):
         ["NQN", "nqn", str, ""],
         ["AllowAnyHost", "allow_any_host", bool, False],
         ["SN", "serial_number", str, "00000000000000000000"],
+        ["MN", "model_number", str, "SPDK bdev Controller"],
         ["MaxNamespaces", "max_namespaces", str, ""],
     ]
     listen_address = []
@@ -354,7 +356,7 @@ def get_nvmf_subsystem_json(config, section):
                 })
     # Get parameters: nqn, allow_any_host, serial_number
     # for nvmf_subsystem_create rpc method
-    parameters = to_json_params(params[1:4])
+    parameters = to_json_params(params[1:5])
     nvmf_subsystem_methods.append({
         "params": parameters,
         "method": "nvmf_subsystem_create"
@@ -385,8 +387,8 @@ def get_nvmf_subsystem_json(config, section):
         })
 
     # Define max_namespaces if it is set in old config
-    if params[4][3]:
-        nvmf_subsystem_methods[0]['params']['max_namespaces'] = int(params[4][3])
+    if params[5][3]:
+        nvmf_subsystem_methods[0]['params']['max_namespaces'] = int(params[5][3])
 
     return nvmf_subsystem_methods
 

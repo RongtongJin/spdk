@@ -8,10 +8,25 @@ spdk_app_start() now only accepts a single context argument.
 
 ### nvme
 
-Added asynchronous probe support.  New APIs spdk_nvme_probe_async() and
-spdk_nvme_probe_poll_async() were added to enable this feature.
+Added asynchronous probe support.  New APIs spdk_nvme_probe_async(),
+spdk_nvme_connect_async() and spdk_nvme_probe_poll_async() were added to
+enable this feature, spdk_nvme_probe_async() and spdk_nvme_connect_async()
+return a context associated with the specified controllers.  Users then call
+spdk_nvme_probe_poll_async() until it returns 0, indicating that the operation
+is completed with success.
+
+A new qpair creation option, delay_pcie_doorbell, was added. This can be passed
+to spdk_nvme_alloc_io_qpair(). This makes the I/O submission functions,
+such as spdk_nvme_ns_writev(), skip ringing the submission queue doorbell.
+Instead the doorbell will be rung as necessary inside
+spdk_nvme_qpair_process_completions(). This can result in significantly fewer
+MMIO writes to the doorbell register under heavy load, greatly improving
+performance.
 
 New API spdk_nvme_ctrlr_get_flags() was added.
+
+NVMe hotplug poller is now able to detach devices hotremoved from the system
+via `/sys/bus/pci/devices/<bdf>/remove` and `/sys/bus/pci/devices/<bdf>/driver/unbind`.
 
 ### raid
 
@@ -30,6 +45,68 @@ to be performed on the thread at given time.
 
 An new API `spdk_bdev_get_data_block_size` has been added to get size of data
 block except for metadata.
+
+spdk_vbdev_register() has been deprecated.  spdk_bdev_register() should be used
+instead.
+
+A mechanism for acquiring and releasing data buffers from bdev modules, used
+to perform zero copy operations, was added.
+
+New APIs spdk_bdev_get_md_size(), spdk_bdev_is_md_interleaved(), spdk_bdev_get_dif_type(),
+spdk_bdev_is_dif_head_of_md(), and spdk_bdev_is_dif_check_enabled() have been
+added to get metadata and DIF settings.
+
+### NVMe-oF Target
+
+Support for per-device shared receive queues in the RDMA transport has been added.
+It is enabled by default for any device that supports it.
+
+The size of a shared receive queue is defined by transport configuration file parameter
+`MaxSRQDepth` and `nvmf_create_transport` RPC method parameter `max_srq_depth`.
+Default size is 4096.
+
+Add model number as parameter to construct_nvmf_subsystem (-d option),
+rather than using hardcoded define.
+
+DIF passthrough feature has been added. DIF setting of the allocated bdevs is
+exposed to the NVMe-oF initiator and data with DIF from the NVMe-oF initiator is
+passed through to the allocated bdevs.
+
+### env
+
+The `phys_addr` parameter in spdk_malloc() and spdk_zmalloc() has been deprecated.
+For retrieving physical addresses, spdk_vtophys() should be used instead.
+
+spdk_pci_device_is_removed() has been added to let the upper-layer SPDK drivers know
+that device has a pending external hotremove request.
+
+### DPDK
+
+Dropped support for DPDK 17.07 and earlier, which SPDK won't even compile with right now.
+
+### env
+
+spdk_env_fini() and spdk_env_dpdk_post_fini() were added to release any resources
+allocated by spdk_env_init() or spdk_env_dpdk_post_init() respectively. It is expected
+that common usage of those functions is to call them just before terminating the process.
+
+### rpc
+
+New `get_spdk_version` RPC method is introduced to get version info of the running SPDK application.
+
+The `start_nbd_disk` RPC method now take nbd_device as an optional parameter. If nbd_device
+is specified, use that specified nbd device. If it's not specified, pick available one.
+
+### Opal
+
+Add Opal scan support for NVMe to check whether it supports SED Opal and dump
+device info. Add Opal take ownership command support. nvme_manage tool can be used to invoke this.
+This module should be considered experimental pending additional features and tests.
+
+### iSCSI target
+
+DIF strip and insert is now supported. DIF settings are not exposed to the iSCSI initiator.
+DIF is attached into data for write I/O and stripped from data for read I/O.
 
 ## v19.01:
 

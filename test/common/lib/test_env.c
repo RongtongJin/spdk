@@ -114,6 +114,15 @@ spdk_dma_malloc(size_t size, size_t align, uint64_t *phys_addr)
 	return spdk_malloc(size, align, phys_addr, -1, 1);
 }
 
+DEFINE_RETURN_MOCK(spdk_realloc, void *);
+void *
+spdk_realloc(void *buf, size_t size, size_t align)
+{
+	HANDLE_RETURN_MOCK(spdk_realloc);
+
+	return realloc(buf, size);
+}
+
 DEFINE_RETURN_MOCK(spdk_dma_zmalloc, void *);
 void *
 spdk_dma_zmalloc(size_t size, size_t align, uint64_t *phys_addr)
@@ -153,6 +162,8 @@ spdk_dma_realloc(void *buf, size_t size, size_t align, uint64_t *phys_addr)
 void
 spdk_free(void *buf)
 {
+	/* fix for false-positives in *certain* static analysis tools. */
+	assert((uintptr_t)buf != UINTPTR_MAX);
 	free(buf);
 }
 

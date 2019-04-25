@@ -202,10 +202,9 @@ nvme_allocate_request_user_copy(struct spdk_nvme_qpair *qpair,
 {
 	struct nvme_request *req;
 	void *dma_buffer = NULL;
-	uint64_t phys_addr;
 
 	if (buffer && payload_size) {
-		dma_buffer = spdk_zmalloc(payload_size, 4096, &phys_addr,
+		dma_buffer = spdk_zmalloc(payload_size, 4096, NULL,
 					  SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA);
 		if (!dma_buffer) {
 			return NULL;
@@ -635,7 +634,6 @@ spdk_nvme_connect(const struct spdk_nvme_transport_id *trid,
 {
 	int rc;
 	struct spdk_nvme_ctrlr *ctrlr = NULL;
-	spdk_nvme_probe_cb probe_cb = NULL;
 	struct spdk_nvme_probe_ctx *probe_ctx;
 
 	if (trid == NULL) {
@@ -643,21 +641,16 @@ spdk_nvme_connect(const struct spdk_nvme_transport_id *trid,
 		return NULL;
 	}
 
-	rc = nvme_driver_init();
-	if (rc != 0) {
+	if (opts && (opts_size != sizeof(*opts))) {
+		SPDK_ERRLOG("Invalid opts size\n");
 		return NULL;
 	}
 
-	if (opts && opts_size == sizeof(*opts)) {
-		probe_cb = spdk_nvme_connect_probe_cb;
-	}
-
-	probe_ctx = calloc(1, sizeof(*probe_ctx));
+	probe_ctx = spdk_nvme_connect_async(trid, opts, NULL);
 	if (!probe_ctx) {
+		SPDK_ERRLOG("Create probe context failed\n");
 		return NULL;
 	}
-	spdk_nvme_probe_ctx_init(probe_ctx, trid, (void *)opts, probe_cb, NULL, NULL);
-	spdk_nvme_probe_internal(probe_ctx, true);
 
 	rc = nvme_init_controllers(probe_ctx);
 	if (rc != 0) {
@@ -1099,6 +1092,39 @@ spdk_nvme_probe_poll_async(struct spdk_nvme_probe_ctx *probe_ctx)
 	}
 
 	return -EAGAIN;
+}
+
+struct spdk_nvme_probe_ctx *
+spdk_nvme_connect_async(const struct spdk_nvme_transport_id *trid,
+			const struct spdk_nvme_ctrlr_opts *opts,
+			spdk_nvme_attach_cb attach_cb)
+{
+	int rc;
+	spdk_nvme_probe_cb probe_cb = NULL;
+	struct spdk_nvme_probe_ctx *probe_ctx;
+
+	rc = nvme_driver_init();
+	if (rc != 0) {
+		return NULL;
+	}
+
+	probe_ctx = calloc(1, sizeof(*probe_ctx));
+	if (!probe_ctx) {
+		return NULL;
+	}
+
+	if (opts) {
+		probe_cb = spdk_nvme_connect_probe_cb;
+	}
+
+	spdk_nvme_probe_ctx_init(probe_ctx, trid, (void *)opts, probe_cb, attach_cb, NULL);
+	rc = spdk_nvme_probe_internal(probe_ctx, true);
+	if (rc != 0) {
+		free(probe_ctx);
+		return NULL;
+	}
+
+	return probe_ctx;
 }
 
 SPDK_LOG_REGISTER_COMPONENT("nvme", SPDK_LOG_NVME)

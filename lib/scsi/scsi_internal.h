@@ -61,25 +61,27 @@ struct spdk_scsi_port {
 };
 
 struct spdk_scsi_dev {
-	int			id;
-	int			is_allocated;
-	bool			removed;
+	int				id;
+	int				is_allocated;
+	bool				removed;
+	spdk_scsi_dev_destruct_cb_t	remove_cb;
+	void				*remove_ctx;
 
-	char			name[SPDK_SCSI_DEV_MAX_NAME + 1];
+	char				name[SPDK_SCSI_DEV_MAX_NAME + 1];
 
-	struct spdk_scsi_lun	*lun[SPDK_SCSI_DEV_MAX_LUN];
+	struct spdk_scsi_lun		*lun[SPDK_SCSI_DEV_MAX_LUN];
 
-	int			num_ports;
-	struct spdk_scsi_port	port[SPDK_SCSI_DEV_MAX_PORTS];
+	int				num_ports;
+	struct spdk_scsi_port		port[SPDK_SCSI_DEV_MAX_PORTS];
 
-	uint8_t			protocol_id;
+	uint8_t				protocol_id;
 };
 
-struct spdk_scsi_desc {
+struct spdk_scsi_lun_desc {
 	struct spdk_scsi_lun		*lun;
-	spdk_scsi_remove_cb_t		hotremove_cb;
+	spdk_scsi_lun_remove_cb_t	hotremove_cb;
 	void				*hotremove_ctx;
-	TAILQ_ENTRY(spdk_scsi_desc)	link;
+	TAILQ_ENTRY(spdk_scsi_lun_desc)	link;
 };
 
 struct spdk_scsi_lun {
@@ -114,7 +116,7 @@ struct spdk_scsi_lun {
 	void *hotremove_ctx;
 
 	/** List of open descriptors for this LUN. */
-	TAILQ_HEAD(, spdk_scsi_desc) open_descs;
+	TAILQ_HEAD(, spdk_scsi_lun_desc) open_descs;
 
 	/** submitted tasks */
 	TAILQ_HEAD(tasks, spdk_scsi_task) tasks;

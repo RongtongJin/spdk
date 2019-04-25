@@ -83,9 +83,8 @@ void spdk_vhost_fini(spdk_vhost_fini_cb fini_cb);
  * Write vhost subsystem configuration into provided JSON context.
  *
  * \param w JSON write context
- * \param done_ev call this event when done.
  */
-void spdk_vhost_config_json(struct spdk_json_write_ctx *w, struct spdk_event *done_ev);
+void spdk_vhost_config_json(struct spdk_json_write_ctx *w);
 
 /**
  * Deinit vhost application. This is called once by SPDK app layer.
@@ -110,9 +109,16 @@ void spdk_vhost_shutdown_cb(void);
 struct spdk_vhost_dev;
 
 /**
- * Lock the global vhost mutex, which synchronizes all the vhost device accesses.
+ * Lock the global vhost mutex synchronizing all the vhost device accesses.
  */
 void spdk_vhost_lock(void);
+
+/**
+ * Lock the global vhost mutex synchronizing all the vhost device accesses.
+ *
+ * \return 0 if the mutex could be locked immediately, negative errno otherwise.
+ */
+int spdk_vhost_trylock(void);
 
 /**
  * Unlock the global vhost mutex.

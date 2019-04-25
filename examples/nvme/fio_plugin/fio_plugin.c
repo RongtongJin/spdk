@@ -49,6 +49,7 @@
 
 static bool g_spdk_env_initialized;
 static int g_spdk_enable_sgl = 0;
+static uint32_t g_spdk_sge_size = 4096;
 static uint32_t g_spdk_pract_flag;
 static uint32_t g_spdk_prchk_flags;
 static uint32_t g_spdk_md_per_io_size = 4096;
@@ -60,6 +61,7 @@ struct spdk_fio_options {
 	int	mem_size;
 	int	shm_id;
 	int	enable_sgl;
+	int	sge_size;
 	char	*hostnqn;
 	int	pi_act;
 	char	*pi_chk;
@@ -104,6 +106,11 @@ struct spdk_fio_qpair {
 	bool			do_nvme_pi;
 	/* True for DIF and false for DIX, and this is valid only if do_nvme_pi is true. */
 	bool			extended_lba;
+	/* True for protection info transferred at start of metadata,
+	 * false for protection info transferred at end of metadata, and
+	 * this is valid only if do_nvme_pi is true.
+	 */
+	bool			md_start;
 	struct spdk_fio_qpair	*next;
 	struct spdk_fio_ctrlr	*fio_ctrlr;
 };
@@ -213,12 +220,7 @@ fio_do_nvme_pi_check(struct spdk_fio_qpair *fio_qpair)
 		return false;
 	}
 
-	/* PI locates at the first 8 bytes of metadata,
-	 * doesn't support now
-	 */
-	if (nsdata->dps.md_start) {
-		return false;
-	}
+	fio_qpair->md_start = nsdata->dps.md_start;
 
 	/* Controller performs PI setup and check */
 	if (fio_qpair->io_flags & SPDK_NVME_IO_FLAGS_PRACT) {
@@ -234,6 +236,7 @@ attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 {
 	struct thread_data	*td = cb_ctx;
 	struct spdk_fio_thread	*fio_thread = td->io_ops_data;
+	struct spdk_nvme_io_qpair_opts	qpopts;
 	struct spdk_fio_ctrlr	*fio_ctrlr;
 	struct spdk_fio_qpair	*fio_qpair;
 	struct spdk_nvme_ns	*ns;
@@ -301,7 +304,10 @@ attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 		return;
 	}
 
-	fio_qpair->qpair = spdk_nvme_ctrlr_alloc_io_qpair(fio_ctrlr->ctrlr, NULL, 0);
+	spdk_nvme_ctrlr_get_default_io_qpair_opts(fio_ctrlr->ctrlr, &qpopts, sizeof(qpopts));
+	qpopts.delay_pcie_doorbell = true;
+
+	fio_qpair->qpair = spdk_nvme_ctrlr_alloc_io_qpair(fio_ctrlr->ctrlr, &qpopts, sizeof(qpopts));
 	if (!fio_qpair->qpair) {
 		SPDK_ERRLOG("Cannot allocate nvme io_qpair any more\n");
 		g_error = true;
@@ -403,6 +409,7 @@ static int spdk_fio_setup(struct thread_data *td)
 		opts.mem_size = fio_options->mem_size;
 		opts.shm_id = fio_options->shm_id;
 		g_spdk_enable_sgl = fio_options->enable_sgl;
+		g_spdk_sge_size = fio_options->sge_size;
 		parse_pract_flag(fio_options->pi_act);
 		g_spdk_md_per_io_size = spdk_max(fio_options->md_per_io_size, 4096);
 		g_spdk_apptag = (uint16_t)fio_options->apptag;
@@ -566,7 +573,7 @@ fio_extended_lba_setup_pi(struct spdk_fio_qpair *fio_qpair, struct io_u *io_u)
 	lba_count = io_u->xfer_buflen / extended_lba_size;
 
 	rc = spdk_dif_ctx_init(&fio_req->dif_ctx, extended_lba_size, md_size,
-			       true, false,
+			       true, fio_qpair->md_start,
 			       (enum spdk_dif_type)spdk_nvme_ns_get_pi_type(ns),
 			       fio_qpair->io_flags, lba, g_spdk_apptag_mask, g_spdk_apptag, 0);
 	if (rc != 0) {
@@ -600,7 +607,7 @@ fio_separate_md_setup_pi(struct spdk_fio_qpair *fio_qpair, struct io_u *io_u)
 	lba_count = io_u->xfer_buflen / block_size;
 
 	rc = spdk_dif_ctx_init(&fio_req->dif_ctx, block_size, md_size,
-			       false, false,
+			       false, fio_qpair->md_start,
 			       (enum spdk_dif_type)spdk_nvme_ns_get_pi_type(ns),
 			       fio_qpair->io_flags, lba, g_spdk_apptag_mask, g_spdk_apptag, 0);
 	if (rc != 0) {
@@ -704,16 +711,22 @@ spdk_nvme_io_next_sge(void *ref, void **address, uint32_t *length)
 {
 	struct spdk_fio_request *fio_req = (struct spdk_fio_request *)ref;
 	struct io_u *io_u = fio_req->io;
+	uint32_t iov_len;
 
 	*address = io_u->buf;
-	*length = io_u->xfer_buflen;
 
 	if (fio_req->iov_offset) {
 		assert(fio_req->iov_offset <= io_u->xfer_buflen);
 		*address += fio_req->iov_offset;
-		*length -= fio_req->iov_offset;
 	}
 
+	iov_len = io_u->xfer_buflen - fio_req->iov_offset;
+	if (iov_len > g_spdk_sge_size) {
+		iov_len = g_spdk_sge_size;
+	}
+
+	fio_req->iov_offset += iov_len;
+	*length = iov_len;
 	return 0;
 }
 
@@ -949,6 +962,16 @@ static struct fio_option options[] = {
 		.off1		= offsetof(struct spdk_fio_options, enable_sgl),
 		.def		= "0",
 		.help		= "SGL Used for I/O Commands (enable_sgl=1 or enable_sgl=0)",
+		.category	= FIO_OPT_C_ENGINE,
+		.group		= FIO_OPT_G_INVALID,
+	},
+	{
+		.name		= "sge_size",
+		.lname		= "SGL size used for I/O commands",
+		.type		= FIO_OPT_INT,
+		.off1		= offsetof(struct spdk_fio_options, sge_size),
+		.def		= "4096",
+		.help		= "SGL size in bytes for I/O Commands (default 4096)",
 		.category	= FIO_OPT_C_ENGINE,
 		.group		= FIO_OPT_G_INVALID,
 	},

@@ -33,6 +33,7 @@
 
 #include "env_internal.h"
 
+#include <rte_alarm.h>
 #include "spdk/env.h"
 
 #define SYSFS_PCI_DRIVERS	"/sys/bus/pci/drivers"
@@ -73,11 +74,7 @@ spdk_cfg_read_rte(struct spdk_pci_device *dev, void *value, uint32_t len, uint32
 {
 	int rc;
 
-#if RTE_VERSION >= RTE_VERSION_NUM(17, 05, 0, 4)
 	rc = rte_pci_read_config(dev->dev_handle, value, len, offset);
-#else
-	rc = rte_eal_pci_read_config(dev->dev_handle, value, len, offset);
-#endif
 
 #if defined(__FreeBSD__) && RTE_VERSION < RTE_VERSION_NUM(18, 11, 0, 0)
 	/* Older DPDKs return 0 on success and -1 on failure */
@@ -91,11 +88,7 @@ spdk_cfg_write_rte(struct spdk_pci_device *dev, void *value, uint32_t len, uint3
 {
 	int rc;
 
-#if RTE_VERSION >= RTE_VERSION_NUM(17, 05, 0, 4)
 	rc = rte_pci_write_config(dev->dev_handle, value, len, offset);
-#else
-	rc = rte_eal_pci_write_config(dev->dev_handle, value, len, offset);
-#endif
 
 #ifdef __FreeBSD__
 	/* DPDK returns 0 on success and -1 on failure */
@@ -105,9 +98,9 @@ spdk_cfg_write_rte(struct spdk_pci_device *dev, void *value, uint32_t len, uint3
 }
 
 static void
-spdk_detach_rte(struct spdk_pci_device *dev)
+spdk_detach_rte_cb(void *_dev)
 {
-	struct rte_pci_device *rte_dev = dev->dev_handle;
+	struct rte_pci_device *rte_dev = _dev;
 
 #if RTE_VERSION >= RTE_VERSION_NUM(18, 11, 0, 0)
 	char bdf[32];
@@ -117,14 +110,23 @@ spdk_detach_rte(struct spdk_pci_device *dev)
 	do {
 		rc = rte_eal_hotplug_remove("pci", bdf);
 	} while (rc == -ENOMSG && ++i <= DPDK_HOTPLUG_RETRY_COUNT);
-#elif RTE_VERSION >= RTE_VERSION_NUM(17, 11, 0, 3)
-	rte_eal_dev_detach(&rte_dev->device);
-#elif RTE_VERSION >= RTE_VERSION_NUM(17, 05, 0, 4)
-	rte_pci_detach(&rte_dev->addr);
 #else
-	rte_eal_device_remove(&rte_dev->device);
-	rte_eal_pci_detach(&rte_dev->addr);
+	rte_eal_dev_detach(&rte_dev->device);
 #endif
+}
+
+static void
+spdk_detach_rte(struct spdk_pci_device *dev)
+{
+	/* The device was already marked as available and could be attached
+	 * again while we go asynchronous, so we explicitly forbid that.
+	 */
+	dev->internal.pending_removal = true;
+	if (spdk_process_is_primary()) {
+		rte_eal_alarm_set(10, spdk_detach_rte_cb, dev->dev_handle);
+	} else {
+		spdk_detach_rte_cb(dev->dev_handle);
+	}
 }
 
 void
@@ -132,6 +134,42 @@ spdk_pci_driver_register(struct spdk_pci_driver *driver)
 {
 	TAILQ_INSERT_TAIL(&g_pci_drivers, driver, tailq);
 }
+
+#if RTE_VERSION >= RTE_VERSION_NUM(18, 5, 0, 0)
+static void
+spdk_pci_device_rte_hotremove(const char *device_name,
+			      enum rte_dev_event_type event,
+			      void *cb_arg)
+{
+	struct spdk_pci_device *dev;
+
+	if (event != RTE_DEV_EVENT_REMOVE) {
+		return;
+	}
+
+	pthread_mutex_lock(&g_pci_mutex);
+	TAILQ_FOREACH(dev, &g_pci_devices, internal.tailq) {
+		struct rte_pci_device *rte_dev = dev->dev_handle;
+
+		if (strcmp(rte_dev->name, device_name) == 0) {
+			if (!dev->internal.pending_removal &&
+			    !dev->internal.attached) {
+				/* if device is not attached, we
+				 * can remove it right away.
+				 */
+				spdk_detach_rte(dev);
+			} else {
+				/* otherwise we let the upper layers
+				 * detach it first.
+				 */
+				dev->internal.pending_removal = true;
+			}
+			break;
+		}
+	}
+	pthread_mutex_unlock(&g_pci_mutex);
+}
+#endif
 
 void
 spdk_pci_init(void)
@@ -158,6 +196,33 @@ spdk_pci_init(void)
 		rte_pci_register(&driver->driver);
 	}
 #endif
+
+#if RTE_VERSION >= RTE_VERSION_NUM(18, 5, 0, 0)
+	/* Register a single hotremove callback for all devices. */
+	if (spdk_process_is_primary()) {
+		rte_dev_event_callback_register(NULL, spdk_pci_device_rte_hotremove, NULL);
+	}
+#endif
+}
+
+void
+spdk_pci_fini(void)
+{
+	struct spdk_pci_device *dev;
+	char bdf[32];
+
+	TAILQ_FOREACH(dev, &g_pci_devices, internal.tailq) {
+		if (dev->internal.attached) {
+			spdk_pci_addr_fmt(bdf, sizeof(bdf), &dev->addr);
+			fprintf(stderr, "Device %s is still attached at shutdown!\n", bdf);
+		}
+	}
+
+#if RTE_VERSION >= RTE_VERSION_NUM(18, 5, 0, 0)
+	if (spdk_process_is_primary()) {
+		rte_dev_event_callback_unregister(NULL, spdk_pci_device_rte_hotremove, NULL);
+	}
+#endif
 }
 
 int
@@ -170,9 +235,6 @@ spdk_pci_device_init(struct rte_pci_driver *_drv,
 
 #if RTE_VERSION < RTE_VERSION_NUM(18, 11, 0, 0)
 	if (!driver->cb_fn) {
-#if RTE_VERSION < RTE_VERSION_NUM(17, 02, 0, 1)
-		rte_eal_pci_unmap_device(_dev);
-#endif
 		/* Return a positive value to indicate that this device does
 		 * not belong to this driver, but this isn't an error.
 		 */
@@ -257,18 +319,9 @@ spdk_pci_device_attach(struct spdk_pci_driver *driver,
 {
 	struct spdk_pci_device *dev;
 	int rc;
-#if RTE_VERSION >= RTE_VERSION_NUM(17, 11, 0, 3)
 	char bdf[32];
 
 	spdk_pci_addr_fmt(bdf, sizeof(bdf), pci_address);
-#else
-	struct rte_pci_addr addr;
-
-	addr.domain = pci_address->domain;
-	addr.bus = pci_address->bus;
-	addr.devid = pci_address->dev;
-	addr.function = pci_address->func;
-#endif
 
 	pthread_mutex_lock(&g_pci_mutex);
 
@@ -279,7 +332,7 @@ spdk_pci_device_attach(struct spdk_pci_driver *driver,
 	}
 
 	if (dev != NULL && dev->internal.driver == driver) {
-		if (dev->internal.attached) {
+		if (dev->internal.attached || dev->internal.pending_removal) {
 			pthread_mutex_unlock(&g_pci_mutex);
 			return -1;
 		}
@@ -294,11 +347,7 @@ spdk_pci_device_attach(struct spdk_pci_driver *driver,
 
 	if (!driver->is_registered) {
 		driver->is_registered = true;
-#if RTE_VERSION >= RTE_VERSION_NUM(17, 05, 0, 4)
 		rte_pci_register(&driver->driver);
-#else
-		rte_eal_pci_register(&driver->driver);
-#endif
 	}
 
 	driver->cb_fn = enum_cb;
@@ -317,12 +366,8 @@ spdk_pci_device_attach(struct spdk_pci_driver *driver,
 		 */
 		rc = 0;
 	}
-#elif RTE_VERSION >= RTE_VERSION_NUM(17, 11, 0, 3)
-	rc = rte_eal_dev_attach(bdf, "");
-#elif RTE_VERSION >= RTE_VERSION_NUM(17, 05, 0, 4)
-	rc = rte_pci_probe_one(&addr);
 #else
-	rc = rte_eal_pci_probe_one(&addr);
+	rc = rte_eal_dev_attach(bdf, "");
 #endif
 
 	driver->cb_arg = NULL;
@@ -347,7 +392,9 @@ spdk_pci_enumerate(struct spdk_pci_driver *driver,
 	pthread_mutex_lock(&g_pci_mutex);
 
 	TAILQ_FOREACH(dev, &g_pci_devices, internal.tailq) {
-		if (dev->internal.attached || dev->internal.driver != driver) {
+		if (dev->internal.attached ||
+		    dev->internal.driver != driver ||
+		    dev->internal.pending_removal) {
 			continue;
 		}
 
@@ -362,23 +409,13 @@ spdk_pci_enumerate(struct spdk_pci_driver *driver,
 
 	if (!driver->is_registered) {
 		driver->is_registered = true;
-#if RTE_VERSION >= RTE_VERSION_NUM(17, 05, 0, 4)
 		rte_pci_register(&driver->driver);
-#else
-		rte_eal_pci_register(&driver->driver);
-#endif
 	}
 
 	driver->cb_fn = enum_cb;
 	driver->cb_arg = enum_ctx;
 
-#if RTE_VERSION >= RTE_VERSION_NUM(17, 11, 0, 3)
 	if (rte_bus_scan() != 0 || rte_bus_probe() != 0) {
-#elif RTE_VERSION >= RTE_VERSION_NUM(17, 05, 0, 4)
-	if (rte_pci_scan() != 0 || rte_pci_probe() != 0) {
-#else
-	if (rte_eal_pci_scan() != 0 || rte_eal_pci_probe() != 0) {
-#endif
 		driver->cb_arg = NULL;
 		driver->cb_fn = NULL;
 		pthread_mutex_unlock(&g_pci_mutex);
@@ -562,6 +599,12 @@ struct spdk_pci_addr
 spdk_pci_device_get_addr(struct spdk_pci_device *dev)
 {
 	return dev->addr;
+}
+
+bool
+spdk_pci_device_is_removed(struct spdk_pci_device *dev)
+{
+	return dev->internal.pending_removal;
 }
 
 int

@@ -174,13 +174,6 @@ spdk_push_arg(char *args[], int *argcount, char *arg)
 	return tmp;
 }
 
-static void
-spdk_destruct_eal_cmdline(void)
-{
-	spdk_free_args(g_eal_cmdline, g_eal_cmdline_argcount);
-}
-
-
 static int
 spdk_build_eal_cmdline(const struct spdk_env_opts *opts)
 {
@@ -280,9 +273,11 @@ spdk_build_eal_cmdline(const struct spdk_env_opts *opts)
 
 #if RTE_VERSION >= RTE_VERSION_NUM(18, 05, 0, 0) && RTE_VERSION < RTE_VERSION_NUM(18, 5, 1, 0)
 	/* Dynamic memory management is buggy in DPDK 18.05.0. Don't use it. */
-	args = spdk_push_arg(args, &argcount, _sprintf_alloc("--legacy-mem"));
-	if (args == NULL) {
-		return -1;
+	if (!opts->env_context || strcmp(opts->env_context, "--legacy-mem") != 0) {
+		args = spdk_push_arg(args, &argcount, _sprintf_alloc("--legacy-mem"));
+		if (args == NULL) {
+			return -1;
+		}
 	}
 #endif
 
@@ -336,9 +331,11 @@ spdk_build_eal_cmdline(const struct spdk_env_opts *opts)
 	 * the memory for a buffer over two allocations meaning the buffer will be split over a memory region.
 	 */
 #if RTE_VERSION >= RTE_VERSION_NUM(19, 02, 0, 0)
-	args = spdk_push_arg(args, &argcount, _sprintf_alloc("%s", "--match-allocations"));
-	if (args == NULL) {
-		return -1;
+	if (!opts->env_context || strcmp(opts->env_context, "--legacy-mem") != 0) {
+		args = spdk_push_arg(args, &argcount, _sprintf_alloc("%s", "--match-allocations"));
+		if (args == NULL) {
+			return -1;
+		}
 	}
 #endif
 
@@ -365,10 +362,6 @@ spdk_build_eal_cmdline(const struct spdk_env_opts *opts)
 
 	g_eal_cmdline = args;
 	g_eal_cmdline_argcount = argcount;
-	if (atexit(spdk_destruct_eal_cmdline) != 0) {
-		fprintf(stderr, "Failed to register cleanup handler\n");
-	}
-
 	return argcount;
 }
 
@@ -387,6 +380,14 @@ spdk_env_dpdk_post_init(void)
 	}
 
 	return 0;
+}
+
+void
+spdk_env_dpdk_post_fini(void)
+{
+	spdk_pci_fini();
+
+	spdk_free_args(g_eal_cmdline, g_eal_cmdline_argcount);
 }
 
 int
@@ -447,6 +448,12 @@ spdk_env_init(const struct spdk_env_opts *opts)
 	}
 
 	return spdk_env_dpdk_post_init();
+}
+
+void
+spdk_env_fini(void)
+{
+	spdk_env_dpdk_post_fini();
 }
 
 bool

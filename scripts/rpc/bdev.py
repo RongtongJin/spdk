@@ -15,6 +15,32 @@ def set_bdev_options(client, bdev_io_pool_size=None, bdev_io_cache_size=None):
     return client.call('set_bdev_options', params)
 
 
+def construct_compress_bdev(client, base_bdev_name, name, comp_pmd):
+    """Construct a compress virtual block device.
+
+    Args:
+        base_bdev_name: name of the underlying base bdev
+        name: name for the compress vbdev
+        comp_pmd: name of of the DPDK compression driver to use
+
+    Returns:
+        Name of created virtual block device.
+    """
+    params = {'base_bdev_name': base_bdev_name, 'name': name, 'comp_pmd': comp_pmd}
+
+    return client.call('construct_compress_bdev', params)
+
+
+def delete_compress_bdev(client, name):
+    """Delete compress virtual block device.
+
+    Args:
+        name: name of compress vbdev to delete
+    """
+    params = {'name': name}
+    return client.call('delete_compress_bdev', params)
+
+
 def construct_crypto_bdev(client, base_bdev_name, name, crypto_pmd, key):
     """Construct a crypto virtual block device.
 
@@ -85,15 +111,19 @@ def get_ocf_stats(client, name):
     return client.call('get_ocf_stats', params)
 
 
-def get_ocf_bdevs(client):
+def get_ocf_bdevs(client, name=None):
     """Get list of OCF devices including unregistered ones
 
     Args:
+        name: name of OCF vbdev or name of cache device or name of core device (optional)
 
     Returns:
         Array of OCF devices with their current status
     """
-    return client.call('get_ocf_bdevs', None)
+    params = None
+    if name:
+        params = {'name': name}
+    return client.call('get_ocf_bdevs', params)
 
 
 def construct_malloc_bdev(client, num_blocks, block_size, name=None, uuid=None):
@@ -235,14 +265,16 @@ def delete_aio_bdev(client, name):
     return client.call('delete_aio_bdev', params)
 
 
-def set_bdev_nvme_options(client, action_on_timeout=None, timeout_us=None, retry_count=None, nvme_adminq_poll_period_us=None):
+def set_bdev_nvme_options(client, action_on_timeout=None, timeout_us=None, retry_count=None,
+                          nvme_adminq_poll_period_us=None, nvme_ioq_poll_period_us=None):
     """Set options for the bdev nvme. This is startup command.
 
     Args:
         action_on_timeout:  action to take on command time out. Valid values are: none, reset, abort (optional)
         timeout_us: Timeout for each command, in microseconds. If 0, don't track timeouts (optional)
         retry_count: The number of attempts per I/O when an I/O fails (optional)
-        nvme_adminq_poll_period_us: how often the admin queue is polled for asynchronous events in microsecon (optional)
+        nvme_adminq_poll_period_us: How often the admin queue is polled for asynchronous events in microseconds (optional)
+        nvme_ioq_poll_period_us: How often to poll I/O queues for completions in microseconds (optional)
     """
     params = {}
 
@@ -257,6 +289,9 @@ def set_bdev_nvme_options(client, action_on_timeout=None, timeout_us=None, retry
 
     if nvme_adminq_poll_period_us:
         params['nvme_adminq_poll_period_us'] = nvme_adminq_poll_period_us
+
+    if nvme_ioq_poll_period_us:
+        params['nvme_ioq_poll_period_us'] = nvme_ioq_poll_period_us
 
     return client.call('set_bdev_nvme_options', params)
 
@@ -516,7 +551,7 @@ def destruct_split_vbdev(client, base_bdev):
     return client.call('destruct_split_vbdev', params)
 
 
-def construct_ftl_bdev(client, name, trtype, traddr, punits, uuid=None):
+def construct_ftl_bdev(client, name, trtype, traddr, punits, uuid=None, cache=None):
     """Construct FTL bdev
 
     Args:
@@ -525,6 +560,7 @@ def construct_ftl_bdev(client, name, trtype, traddr, punits, uuid=None):
         traddr: transport address
         punit: parallel unit range
         uuid: UUID of the device
+        cache: name of the write buffer bdev
     """
     params = {'name': name,
               'trtype': trtype,
@@ -532,6 +568,9 @@ def construct_ftl_bdev(client, name, trtype, traddr, punits, uuid=None):
               'punits': punits}
     if uuid:
         params['uuid'] = uuid
+    if cache:
+        params['cache'] = cache
+
     return client.call('construct_ftl_bdev', params)
 
 

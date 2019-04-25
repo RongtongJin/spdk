@@ -174,7 +174,9 @@ ftl_band_free_md(struct ftl_band *band)
 	}
 
 	spdk_mempool_put(dev->lba_pool, md->lba_map);
+	spdk_dma_free(md->dma_buf);
 	md->lba_map = NULL;
+	md->dma_buf = NULL;
 }
 
 static void
@@ -660,6 +662,13 @@ ftl_band_alloc_md(struct ftl_band *band)
 		return -1;
 	}
 
+	md->dma_buf = spdk_dma_zmalloc(ftl_tail_md_num_lbks(dev) * FTL_BLOCK_SIZE,
+				       FTL_BLOCK_SIZE, NULL);
+	if (!md->dma_buf) {
+		spdk_mempool_put(dev->lba_pool, md->lba_map);
+		return -1;
+	}
+
 	ftl_band_acquire_md(band);
 	return 0;
 }
@@ -756,6 +765,7 @@ ftl_band_write_md(struct ftl_band *band, void *data, size_t lbk_cnt,
 {
 	struct spdk_ftl_dev *dev = band->dev;
 	struct ftl_io *io;
+	int rc;
 
 	io = ftl_io_init_md_write(dev, band, data,
 				  spdk_divide_round_up(lbk_cnt, dev->xfer_size), cb);
@@ -765,7 +775,12 @@ ftl_band_write_md(struct ftl_band *band, void *data, size_t lbk_cnt,
 
 	md_fn(dev, &band->md, data);
 
-	return ftl_io_write(io);
+	rc = ftl_io_write(io);
+	if (rc == -EAGAIN) {
+		rc = 0;
+	}
+
+	return rc;
 }
 
 void
@@ -817,7 +832,8 @@ ftl_band_read_md(struct ftl_band *band, struct ftl_md *md, void *data, size_t lb
 		return -ENOMEM;
 	}
 
-	return ftl_io_read((struct ftl_io *)io);
+	ftl_io_read((struct ftl_io *)io);
+	return 0;
 }
 
 int

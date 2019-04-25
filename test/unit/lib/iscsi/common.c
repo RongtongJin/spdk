@@ -161,7 +161,8 @@ DEFINE_STUB(spdk_scsi_dev_construct, struct spdk_scsi_dev *,
 	     void *hotremove_ctx),
 	    NULL);
 
-DEFINE_STUB_V(spdk_scsi_dev_destruct, (struct spdk_scsi_dev *dev));
+DEFINE_STUB_V(spdk_scsi_dev_destruct,
+	      (struct spdk_scsi_dev *dev, spdk_scsi_dev_destruct_cb_t cb_fn, void *cb_arg));
 
 DEFINE_STUB(spdk_scsi_dev_add_port, int,
 	    (struct spdk_scsi_dev *dev, uint64_t id, const char *name), 0);
@@ -174,6 +175,10 @@ DEFINE_STUB(spdk_scsi_dev_delete_port, int,
 	    (struct spdk_scsi_dev *dev, uint64_t id), 0);
 
 DEFINE_STUB_V(spdk_shutdown_iscsi_conns, (void));
+
+DEFINE_STUB_V(spdk_iscsi_conns_start_exit, (struct spdk_iscsi_tgt_node *target));
+
+DEFINE_STUB(spdk_iscsi_get_active_conns, int, (struct spdk_iscsi_tgt_node *target), 0);
 
 void
 spdk_iscsi_task_cpl(struct spdk_scsi_task *scsi_task)

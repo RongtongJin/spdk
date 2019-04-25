@@ -126,7 +126,9 @@ struct spdk_vhost_session {
 
 	int32_t lcore;
 
+	bool initialized;
 	bool needs_restart;
+	bool forced_polling;
 
 	struct rte_vhost_memory *mem;
 
@@ -149,6 +151,8 @@ struct spdk_vhost_session {
 	struct spdk_vhost_virtqueue virtqueue[SPDK_VHOST_MAX_VQUEUES];
 
 	TAILQ_ENTRY(spdk_vhost_session) tailq;
+
+	struct spdk_vhost_session_fn_ctx *event_ctx;
 };
 
 struct spdk_vhost_dev {
@@ -179,11 +183,6 @@ struct spdk_vhost_dev {
 	uint32_t pending_async_op_num;
 
 	TAILQ_ENTRY(spdk_vhost_dev) tailq;
-};
-
-struct spdk_vhost_dev_destroy_ctx {
-	struct spdk_poller *poller;
-	void *event_ctx;
 };
 
 /**
@@ -320,35 +319,59 @@ void spdk_vhost_dev_foreach_session(struct spdk_vhost_dev *dev,
 				    spdk_vhost_session_fn fn, void *arg);
 
 /**
- * Call the provided function on the session's lcore and block until
- * spdk_vhost_session_event_done() is called.
+ * Call a function on the provided lcore and block until either
+ * spdk_vhost_session_start_done() or spdk_vhost_session_stop_done()
+ * is called.
  *
- * As an optimization, this function will unlock the vhost mutex
- * while it's waiting, which makes it prone to data races.
- * Practically, it is only useful for session start/stop and still
- * has to be used with extra caution.
+ * This must be called under the global vhost mutex, which this function
+ * will unlock for the time it's waiting. It's meant to be called only
+ * from start/stop session callbacks.
  *
+ * \param lcore target session's lcore
  * \param vsession vhost session
  * \param cb_fn the function to call. The void *arg parameter in cb_fn
- * must be passed to spdk_vhost_session_event_done().
+ * is always NULL.
  * \param timeout_sec timeout in seconds. This function will still
  * block after the timeout expires, but will print the provided errmsg.
  * \param errmsg error message to print once the timeout expires
  * \return return the code passed to spdk_vhost_session_event_done().
  */
-int spdk_vhost_session_send_event(struct spdk_vhost_session *vsession,
-				  spdk_vhost_session_fn cb_fn, unsigned timeout_sec, const char *errmsg);
+int spdk_vhost_session_send_event(int32_t lcore, struct spdk_vhost_session *vsession,
+				  spdk_vhost_session_fn cb_fn, unsigned timeout_sec,
+				  const char *errmsg);
 
 /**
- * Finish a blocking spdk_vhost_session_send_event() call.
+ * Finish a blocking spdk_vhost_session_send_event() call and finally
+ * start the session. This must be called on the target lcore, which
+ * will now receive all session-related messages (e.g. from
+ * spdk_vhost_dev_foreach_session()).
  *
- * \param event_ctx event context
+ * Must be called under the global vhost lock.
+ *
+ * \param vsession vhost session
  * \param response return code
  */
-void spdk_vhost_session_event_done(void *event_ctx, int response);
+void spdk_vhost_session_start_done(struct spdk_vhost_session *vsession, int response);
+
+/**
+ * Finish a blocking spdk_vhost_session_send_event() call and finally
+ * stop the session. This must be called on the session's lcore which
+ * used to receive all session-related messages (e.g. from
+ * spdk_vhost_dev_foreach_session()). After this call, the session-
+ * related messages will be once again processed by any arbitrary thread.
+ *
+ * Must be called under the global vhost lock.
+ *
+ * Must be called under the global vhost mutex.
+ *
+ * \param vsession vhost session
+ * \param response return code
+ */
+void spdk_vhost_session_stop_done(struct spdk_vhost_session *vsession, int response);
 
 struct spdk_vhost_session *spdk_vhost_session_find_by_vid(int vid);
 void spdk_vhost_session_install_rte_compat_hooks(struct spdk_vhost_session *vsession);
+void spdk_vhost_dev_install_rte_compat_hooks(struct spdk_vhost_dev *vdev);
 
 void spdk_vhost_free_reactor(uint32_t lcore);
 uint32_t spdk_vhost_allocate_reactor(struct spdk_cpuset *cpumask);

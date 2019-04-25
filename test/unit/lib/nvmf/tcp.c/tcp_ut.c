@@ -220,6 +220,12 @@ spdk_nvmf_subsystem_get_sn(const struct spdk_nvmf_subsystem *subsystem)
 	return subsystem->sn;
 }
 
+const char *
+spdk_nvmf_subsystem_get_mn(const struct spdk_nvmf_subsystem *subsystem)
+{
+	return subsystem->mn;
+}
+
 void
 spdk_trace_add_register_fn(struct spdk_trace_register_fn *reg_fn)
 {
@@ -233,7 +239,7 @@ test_nvmf_tcp_create(void)
 	struct spdk_nvmf_tcp_transport *ttransport;
 	struct spdk_nvmf_transport_opts opts;
 
-	thread = spdk_thread_create(NULL);
+	thread = spdk_thread_create(NULL, NULL);
 	SPDK_CU_ASSERT_FATAL(thread != NULL);
 	spdk_set_thread(thread);
 
@@ -305,7 +311,7 @@ test_nvmf_tcp_destroy(void)
 	struct spdk_nvmf_transport *transport;
 	struct spdk_nvmf_transport_opts opts;
 
-	thread = spdk_thread_create(NULL);
+	thread = spdk_thread_create(NULL, NULL);
 	SPDK_CU_ASSERT_FATAL(thread != NULL);
 	spdk_set_thread(thread);
 
@@ -335,7 +341,7 @@ test_nvmf_tcp_poll_group_create(void)
 	struct spdk_thread *thread;
 	struct spdk_nvmf_transport_opts opts;
 
-	thread = spdk_thread_create(NULL);
+	thread = spdk_thread_create(NULL, NULL);
 	SPDK_CU_ASSERT_FATAL(thread != NULL);
 	spdk_set_thread(thread);
 
@@ -359,32 +365,6 @@ test_nvmf_tcp_poll_group_create(void)
 	spdk_thread_exit(thread);
 }
 
-static void
-test_nvmf_tcp_qpair_is_idle(void)
-{
-	struct spdk_nvmf_tcp_qpair tqpair;
-
-	memset(&tqpair, 0, sizeof(tqpair));
-
-	/* case 1 */
-	tqpair.max_queue_depth = 0;
-	tqpair.state_cntr[TCP_REQUEST_STATE_FREE] = 0;
-	CU_ASSERT(spdk_nvmf_tcp_qpair_is_idle(&tqpair.qpair) == true);
-
-	/* case 2 */
-	tqpair.max_queue_depth = UT_MAX_QUEUE_DEPTH;
-	tqpair.state_cntr[TCP_REQUEST_STATE_FREE] = 0;
-	CU_ASSERT(spdk_nvmf_tcp_qpair_is_idle(&tqpair.qpair) == false);
-
-	/* case 3 */
-	tqpair.state_cntr[TCP_REQUEST_STATE_FREE] = 1;
-	CU_ASSERT(spdk_nvmf_tcp_qpair_is_idle(&tqpair.qpair) == false);
-
-	/* case 4 */
-	tqpair.state_cntr[TCP_REQUEST_STATE_FREE] = UT_MAX_QUEUE_DEPTH;
-	CU_ASSERT(spdk_nvmf_tcp_qpair_is_idle(&tqpair.qpair) == true);
-}
-
 int main(int argc, char **argv)
 {
 	CU_pSuite	suite = NULL;
@@ -403,8 +383,7 @@ int main(int argc, char **argv)
 	if (
 		CU_add_test(suite, "nvmf_tcp_create", test_nvmf_tcp_create) == NULL ||
 		CU_add_test(suite, "nvmf_tcp_destroy", test_nvmf_tcp_destroy) == NULL ||
-		CU_add_test(suite, "nvmf_tcp_poll_group_create", test_nvmf_tcp_poll_group_create) == NULL ||
-		CU_add_test(suite, "nvmf_tcp_qpair_is_idle", test_nvmf_tcp_qpair_is_idle) == NULL
+		CU_add_test(suite, "nvmf_tcp_poll_group_create", test_nvmf_tcp_poll_group_create) == NULL
 	) {
 		CU_cleanup_registry();
 		return CU_get_error();

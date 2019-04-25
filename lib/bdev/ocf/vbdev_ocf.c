@@ -68,6 +68,47 @@ free_vbdev(struct vbdev_ocf *vbdev)
 	free(vbdev);
 }
 
+/* Get existing cache base
+ * that is attached to other vbdev */
+static struct vbdev_ocf_base *
+get_other_cache_base(struct vbdev_ocf_base *base)
+{
+	struct vbdev_ocf *vbdev;
+
+	TAILQ_FOREACH(vbdev, &g_ocf_vbdev_head, tailq) {
+		if (&vbdev->cache == base || !vbdev->cache.attached) {
+			continue;
+		}
+		if (!strcmp(vbdev->cache.name, base->name)) {
+			return &vbdev->cache;
+		}
+	}
+
+	return NULL;
+}
+
+/* Get existing OCF cache instance
+ * that is started by other vbdev */
+static ocf_cache_t
+get_other_cache_instance(struct vbdev_ocf *vbdev)
+{
+	struct vbdev_ocf *cmp;
+
+	TAILQ_FOREACH(cmp, &g_ocf_vbdev_head, tailq) {
+		if (cmp->state.doing_finish || cmp == vbdev) {
+			continue;
+		}
+		if (strcmp(cmp->cache.name, vbdev->cache.name)) {
+			continue;
+		}
+		if (cmp->ocf_cache) {
+			return cmp->ocf_cache;
+		}
+	}
+
+	return NULL;
+}
+
 /* Stop OCF cache object
  * vbdev_ocf is not operational after this */
 static int
@@ -87,15 +128,18 @@ stop_vbdev(struct vbdev_ocf *vbdev)
 		return -EINVAL;
 	}
 
+	if (get_other_cache_instance(vbdev)) {
+		SPDK_NOTICELOG("Not stopping cache instance '%s'"
+			       " because it is referenced by other OCF bdev\n",
+			       vbdev->cache.name);
+		return 0;
+	}
+
 	rc = ocf_mngt_cache_lock(vbdev->ocf_cache);
 	if (rc) {
 		return rc;
 	}
 
-	/* This function blocks execution until all OCF requests are finished
-	 * But we don't have to worry about possible deadlocks because in
-	 * supported modes (WT and PT) all OCF requests are finished before
-	 * SPDK bdev io requests */
 	rc = ocf_mngt_cache_stop(vbdev->ocf_cache);
 	ocf_mngt_cache_unlock(vbdev->ocf_cache);
 	if (rc) {
@@ -118,6 +162,11 @@ remove_base(struct vbdev_ocf_base *base)
 	}
 
 	assert(base->attached);
+
+	if (base->is_cache && get_other_cache_base(base)) {
+		base->attached = false;
+		return 0;
+	}
 
 	/* Release OCF-part */
 	if (base->parent->ocf_cache && ocf_cache_is_running(base->parent->ocf_cache)) {
@@ -146,13 +195,70 @@ close_spdk_dev:
 	return rc;
 }
 
-/* Free OCF resources, close base bdevs, unregister io device
+/* Finish unregister operation */
+static void
+unregister_finish(struct vbdev_ocf *vbdev)
+{
+	int status;
+
+	status = stop_vbdev(vbdev);
+
+	if (vbdev->core.attached) {
+		remove_base(&vbdev->core);
+	}
+	if (vbdev->cache.attached) {
+		remove_base(&vbdev->cache);
+	}
+
+	spdk_bdev_destruct_done(&vbdev->exp_bdev, status);
+	vbdev_ocf_mngt_continue(vbdev, 0);
+}
+
+/* Wait for all OCF requests to finish */
+static void
+wait_for_requests_poll(struct vbdev_ocf *vbdev)
+{
+	if (ocf_cache_has_pending_requests(vbdev->ocf_cache)) {
+		return;
+	}
+
+	vbdev_ocf_mngt_continue(vbdev, 0);
+}
+
+/* Start waiting for OCF requests to finish */
+static void
+wait_for_requests(struct vbdev_ocf *vbdev)
+{
+	vbdev_ocf_mngt_poll(vbdev, wait_for_requests_poll);
+}
+
+/* Procedures called during unregister */
+vbdev_ocf_mngt_fn unregister_path[] = {
+	wait_for_requests,
+	unregister_finish,
+	NULL
+};
+
+/* Start asynchronous management operation using unregister_path */
+static void
+unregister_cb(void *opaque)
+{
+	struct vbdev_ocf *vbdev = opaque;
+	int rc;
+
+	rc = vbdev_ocf_mngt_start(vbdev, unregister_path, NULL, NULL);
+	if (rc) {
+		SPDK_ERRLOG("Unable to unregister OCF bdev: %d\n", rc);
+		spdk_bdev_destruct_done(&vbdev->exp_bdev, rc);
+	}
+}
+
+/* Unregister io device with callback to unregister_cb
  * This function is called during spdk_bdev_unregister */
 static int
 vbdev_ocf_destruct(void *opaque)
 {
 	struct vbdev_ocf *vbdev = opaque;
-	int status = 0;
 
 	if (vbdev->state.doing_finish) {
 		return -EALREADY;
@@ -160,7 +266,9 @@ vbdev_ocf_destruct(void *opaque)
 	vbdev->state.doing_finish = true;
 
 	if (vbdev->state.started) {
-		status = stop_vbdev(vbdev);
+		spdk_io_device_unregister(vbdev, unregister_cb);
+		/* Return 1 because unregister is delayed */
+		return 1;
 	}
 
 	if (vbdev->core.attached) {
@@ -170,23 +278,22 @@ vbdev_ocf_destruct(void *opaque)
 		remove_base(&vbdev->cache);
 	}
 
-	if (vbdev->state.started) {
-		spdk_io_device_unregister(vbdev, NULL);
-	}
-
-	return status;
+	return 0;
 }
 
 /* Stop OCF cache and unregister SPDK bdev */
 int
-vbdev_ocf_delete(struct vbdev_ocf *vbdev)
+vbdev_ocf_delete(struct vbdev_ocf *vbdev, void (*cb)(void *, int), void *cb_arg)
 {
 	int rc = 0;
 
 	if (vbdev->state.started) {
-		spdk_bdev_unregister(&vbdev->exp_bdev, NULL, NULL);
+		spdk_bdev_unregister(&vbdev->exp_bdev, cb, cb_arg);
 	} else {
 		rc = vbdev_ocf_destruct(vbdev);
+		if (rc == 0 && cb) {
+			cb(cb_arg, 0);
+		}
 	}
 
 	return rc;
@@ -474,7 +581,20 @@ static struct spdk_bdev_fn_table cache_dev_fn_table = {
 static int
 start_cache(struct vbdev_ocf *vbdev)
 {
+	ocf_cache_t existing;
 	int rc;
+
+	if (vbdev->ocf_cache) {
+		return -EALREADY;
+	}
+
+	existing = get_other_cache_instance(vbdev);
+	if (existing) {
+		SPDK_NOTICELOG("OCF bdev %s connects to existing cache device %s\n",
+			       vbdev->name, vbdev->cache.name);
+		vbdev->ocf_cache = existing;
+		return 0;
+	}
 
 	rc = ocf_mngt_cache_start(vbdev_ocf_ctx, &vbdev->ocf_cache, &vbdev->cfg.cache);
 	if (rc) {
@@ -522,8 +642,11 @@ static int queue_poll(void *opaque)
 {
 	struct vbdev_ocf_qcxt *qctx = opaque;
 	uint32_t iono = ocf_queue_pending_io(qctx->queue);
+	int i, max = spdk_min(32, iono);
 
-	ocf_queue_run(qctx->queue);
+	for (i = 0; i < max; i++) {
+		ocf_queue_run_single(qctx->queue);
+	}
 
 	if (iono > 0) {
 		return 1;
@@ -544,6 +667,13 @@ vbdev_ocf_ctx_queue_kick(ocf_queue_t q)
 static void
 vbdev_ocf_ctx_queue_stop(ocf_queue_t q)
 {
+	struct vbdev_ocf_qcxt *qctx = ocf_queue_get_priv(q);
+
+	if (qctx) {
+		spdk_put_io_channel(qctx->cache_ch);
+		spdk_put_io_channel(qctx->core_ch);
+		spdk_poller_unregister(&qctx->poller);
+	}
 }
 
 /* Queue ops is an interface for running queue thread
@@ -579,16 +709,24 @@ io_device_create_cb(void *io_device, void *ctx_buf)
 }
 
 /* Called per thread
- * We free resources associated with OCF queue here
- * and close base devices channels */
+ * Put OCF queue and relaunch poller with new context to finish pending requests */
 static void
 io_device_destroy_cb(void *io_device, void *ctx_buf)
 {
+	/* Making a copy of context to use it after io channel will be destroyed */
+	struct vbdev_ocf_qcxt *copy = malloc(sizeof(*copy));
 	struct vbdev_ocf_qcxt *qctx = ctx_buf;
 
-	spdk_put_io_channel(qctx->cache_ch);
-	spdk_put_io_channel(qctx->core_ch);
-	spdk_poller_unregister(&qctx->poller);
+	if (copy) {
+		ocf_queue_set_priv(qctx->queue, copy);
+		memcpy(copy, qctx, sizeof(*copy));
+		spdk_poller_unregister(&qctx->poller);
+		copy->poller = spdk_poller_register(queue_poll, copy, 0);
+	} else {
+		SPDK_ERRLOG("Unable to stop OCF queue properly: %s\n",
+			    spdk_strerror(ENOMEM));
+	}
+
 	ocf_queue_put(qctx->queue);
 }
 
@@ -678,6 +816,7 @@ init_vbdev_config(struct vbdev_ocf *vbdev)
 
 	cfg->core.volume_type = SPDK_OBJECT;
 	cfg->device.volume_type = SPDK_OBJECT;
+	cfg->core.core_id = OCF_CORE_MAX;
 
 	cfg->device.uuid.size = strlen(vbdev->cache.name) + 1;
 	cfg->device.uuid.data = vbdev->cache.name;
@@ -832,21 +971,36 @@ vbdev_ocf_module_fini(void)
 }
 
 /* When base device gets unpluged this is called
- * We will unregister cache vbdev here */
+ * We will unregister cache vbdev here
+ * When cache device is removed, we delete every OCF bdev that used it */
 static void
 hotremove_cb(void *ctx)
 {
 	struct vbdev_ocf_base *base = ctx;
-	struct spdk_bdev *bdev = base->bdev;
+	struct vbdev_ocf *vbdev;
 
-	if (base->parent->state.doing_finish) {
+	if (!base->is_cache) {
+		if (base->parent->state.doing_finish) {
+			return;
+		}
+
+		SPDK_NOTICELOG("Deinitializing '%s' because its core device '%s' was removed\n",
+			       base->parent->name, base->name);
+		vbdev_ocf_delete(base->parent, NULL, NULL);
 		return;
 	}
 
-	SPDK_NOTICELOG("Deinitializing '%s' because its %s device '%s' was removed\n",
-		       base->parent->name, base->is_cache ? "cache" : "core", bdev->name);
-
-	vbdev_ocf_delete(base->parent);
+	TAILQ_FOREACH(vbdev, &g_ocf_vbdev_head, tailq) {
+		if (vbdev->state.doing_finish) {
+			continue;
+		}
+		if (strcmp(base->name, vbdev->cache.name) == 0) {
+			SPDK_NOTICELOG("Deinitializing '%s' because"
+				       " its cache device '%s' was removed\n",
+				       vbdev->name, base->name);
+			vbdev_ocf_delete(vbdev, NULL, NULL);
+		}
+	}
 }
 
 /* Open base SPDK bdev and claim it */
@@ -857,6 +1011,17 @@ attach_base(struct vbdev_ocf_base *base)
 
 	if (base->attached) {
 		return -EALREADY;
+	}
+
+	/* If base cache bdev was already opened by other vbdev,
+	 * we just copy its descriptor here */
+	if (base->is_cache) {
+		struct vbdev_ocf_base *existing = get_other_cache_base(base);
+		if (existing) {
+			base->desc = existing->desc;
+			base->attached = true;
+			return 0;
+		}
 	}
 
 	status = spdk_bdev_open(base->bdev, true, hotremove_cb, base, &base->desc);
@@ -954,7 +1119,7 @@ vbdev_ocf_examine(struct spdk_bdev *bdev)
 
 		if (!strcmp(bdev_name, vbdev->cache.name)) {
 			create_from_bdevs(vbdev, bdev, NULL);
-			break;
+			continue;
 		}
 		if (!strcmp(bdev_name, vbdev->core.name)) {
 			create_from_bdevs(vbdev, NULL, bdev);

@@ -41,17 +41,13 @@
 #include <rte_config.h>
 #include <rte_version.h>
 #include <rte_eal.h>
-#if RTE_VERSION >= RTE_VERSION_NUM(17, 05, 0, 0)
 #include <rte_bus.h>
-#endif
 #include <rte_pci.h>
-#if RTE_VERSION >= RTE_VERSION_NUM(17, 11, 0, 1)
 #include <rte_bus_pci.h>
-#endif
 #include <rte_dev.h>
 
-#if RTE_VERSION < RTE_VERSION_NUM(16, 11, 0, 0)
-#error RTE_VERSION is too old! Minimum 16.11 is required.
+#if RTE_VERSION < RTE_VERSION_NUM(17, 11, 0, 0)
+#error RTE_VERSION is too old! Minimum 17.11 is required.
 #endif
 
 /* x86-64 and ARM userspace virtual addresses use only the low 48 bits [0..47],
@@ -82,6 +78,7 @@ int spdk_pci_device_init(struct rte_pci_driver *driver, struct rte_pci_device *d
 int spdk_pci_device_fini(struct rte_pci_device *device);
 
 void spdk_pci_init(void);
+void spdk_pci_fini(void);
 int spdk_mem_map_init(void);
 int spdk_vtophys_init(void);
 

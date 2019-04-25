@@ -41,6 +41,7 @@ function nbd_function_test() {
 		echo "Process nbd pid: $nbd_pid"
 		waitforlisten $nbd_pid $rpc_server
 
+		nbd_rpc_start_stop_verify $rpc_server "${bdev_list[*]}"
 		nbd_rpc_data_verify $rpc_server "${bdev_list[*]}" "${nbd_list[*]}"
 
 		$rpc_py -s $rpc_server delete_passthru_bdev TestPT
@@ -68,7 +69,7 @@ if [ $SPDK_TEST_RBD -eq 1 ]; then
 fi
 
 if [ $SPDK_TEST_CRYPTO -eq 1 ]; then
-	$rootdir/scripts/gen_crypto.sh Malloc6 >> $testdir/bdev.conf
+	$rootdir/scripts/gen_crypto.sh Malloc6 Malloc7 >> $testdir/bdev.conf
 fi
 
 if hash pmempool; then

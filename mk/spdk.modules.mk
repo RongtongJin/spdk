@@ -44,6 +44,11 @@ BLOCKDEV_MODULES_LIST += bdev_ocf
 BLOCKDEV_MODULES_LIST += ocfenv
 endif
 
+ifeq ($(CONFIG_REDUCE),y)
+BLOCKDEV_MODULES_LIST += bdev_compress reduce
+SYS_LIBS += -lpmem
+endif
+
 ifeq ($(CONFIG_RDMA),y)
 SYS_LIBS += -libverbs -lrdmacm
 endif
@@ -58,6 +63,15 @@ ifeq ($(CONFIG_ISCSI_INITIATOR),y)
 BLOCKDEV_MODULES_LIST += bdev_iscsi
 # Fedora installs libiscsi to /usr/lib64/iscsi for some reason.
 SYS_LIBS += -L/usr/lib64/iscsi -liscsi
+endif
+endif
+
+ifeq ($(CONFIG_URING),y)
+BLOCKDEV_MODULES_LIST += bdev_uring
+SYS_LIBS += -luring
+ifneq ($(strip $(CONFIG_URING_PATH)),)
+CFLAGS += -I$(CONFIG_URING_PATH)
+LDFLAGS += -L$(CONFIG_URING_PATH)
 endif
 endif
 

@@ -272,16 +272,23 @@ modern_setup_queue(struct virtio_dev *dev, struct virtqueue *vq)
 		return -ENOMEM;
 	}
 
-	queue_mem = spdk_dma_zmalloc(vq->vq_ring_size, VALUE_2MB, &queue_mem_phys_addr);
+	queue_mem = spdk_zmalloc(vq->vq_ring_size, VALUE_2MB, NULL,
+				 SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
 	if (queue_mem == NULL) {
 		return -ENOMEM;
+	}
+
+	queue_mem_phys_addr = spdk_vtophys(queue_mem, NULL);
+	if (queue_mem_phys_addr == SPDK_VTOPHYS_ERROR) {
+		spdk_free(queue_mem);
+		return -EFAULT;
 	}
 
 	vq->vq_ring_mem = queue_mem_phys_addr;
 	vq->vq_ring_virt_mem = queue_mem;
 
 	if (!check_vq_phys_addr_ok(vq)) {
-		spdk_dma_free(queue_mem);
+		spdk_free(queue_mem);
 		return -ENOMEM;
 	}
 
@@ -331,7 +338,7 @@ modern_del_queue(struct virtio_dev *dev, struct virtqueue *vq)
 
 	spdk_mmio_write_2(&hw->common_cfg->queue_enable, 0);
 
-	spdk_dma_free(vq->vq_ring_virt_mem);
+	spdk_free(vq->vq_ring_virt_mem);
 }
 
 static void

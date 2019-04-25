@@ -44,7 +44,8 @@ def nvmf_create_transport(client,
                           io_unit_size=None,
                           max_aq_depth=None,
                           num_shared_buffers=None,
-                          buf_cache_size=None):
+                          buf_cache_size=None,
+                          max_srq_depth=None):
     """NVMf Transport Create options.
 
     Args:
@@ -57,6 +58,7 @@ def nvmf_create_transport(client,
         max_aq_depth: Max size admin quque per controller (optional)
         num_shared_buffers: The number of pooled data buffers available to the transport (optional)
         buf_cache_size: The number of shared buffers to reserve for each poll group(optional)
+        max_srq_depth: Max number of outstanding I/O per shared receive queue (optional)
 
     Returns:
         True or False
@@ -80,6 +82,8 @@ def nvmf_create_transport(client,
         params['num_shared_buffers'] = num_shared_buffers
     if buf_cache_size:
         params['buf_cache_size'] = buf_cache_size
+    if max_srq_depth:
+        params['max_srq_depth'] = max_srq_depth
     return client.call('nvmf_create_transport', params)
 
 
@@ -104,6 +108,7 @@ def get_nvmf_subsystems(client):
 def nvmf_subsystem_create(client,
                           nqn,
                           serial_number,
+                          model_number='SPDK bdev Controller',
                           allow_any_host=False,
                           max_namespaces=0):
     """Construct an NVMe over Fabrics target subsystem.
@@ -111,6 +116,7 @@ def nvmf_subsystem_create(client,
     Args:
         nqn: Subsystem NQN.
         serial_number: Serial number of virtual controller.
+        model_number: Model number of virtual controller.
         allow_any_host: Allow any host (True) or enforce allowed host whitelist (False). Default: False.
         max_namespaces: Maximum number of namespaces that can be attached to the subsystem (optional). Default: 0 (Unlimited).
 
@@ -123,6 +129,9 @@ def nvmf_subsystem_create(client,
 
     if serial_number:
         params['serial_number'] = serial_number
+
+    if model_number:
+        params['model_number'] = model_number
 
     if allow_any_host:
         params['allow_any_host'] = True

@@ -62,6 +62,11 @@ DEFINE_STUB(spdk_nvmf_subsystem_get_sn,
 	    (const struct spdk_nvmf_subsystem *subsystem),
 	    NULL);
 
+DEFINE_STUB(spdk_nvmf_subsystem_get_mn,
+	    const char *,
+	    (const struct spdk_nvmf_subsystem *subsystem),
+	    NULL);
+
 DEFINE_STUB(spdk_nvmf_subsystem_get_first_ns,
 	    struct spdk_nvmf_ns *,
 	    (struct spdk_nvmf_subsystem *subsystem),
@@ -819,6 +824,282 @@ test_identify_ns(void)
 	CU_ASSERT(spdk_mem_all_zero(&nsdata, sizeof(nsdata)));
 }
 
+/*
+ * Reservation Unit Test Configuration
+ *       --------             --------    --------
+ *      | Host A |           | Host B |  | Host C |
+ *       --------             --------    --------
+ *      /        \               |           |
+ *  --------   --------       -------     -------
+ * |Ctrlr1_A| |Ctrlr2_A|     |Ctrlr_B|   |Ctrlr_C|
+ *  --------   --------       -------     -------
+ *    \           \              /           /
+ *     \           \            /           /
+ *      \           \          /           /
+ *      --------------------------------------
+ *     |            NAMESPACE 1               |
+ *      --------------------------------------
+ */
+
+static struct spdk_nvmf_ctrlr g_ctrlr1_A, g_ctrlr2_A, g_ctrlr_B, g_ctrlr_C;
+struct spdk_nvmf_subsystem_pg_ns_info g_ns_info;
+
+static void
+ut_reservation_init(enum spdk_nvme_reservation_type rtype)
+{
+	/* Host A has two controllers */
+	spdk_uuid_generate(&g_ctrlr1_A.hostid);
+	spdk_uuid_copy(&g_ctrlr2_A.hostid, &g_ctrlr1_A.hostid);
+
+	/* Host B has 1 controller */
+	spdk_uuid_generate(&g_ctrlr_B.hostid);
+
+	/* Host C has 1 controller */
+	spdk_uuid_generate(&g_ctrlr_C.hostid);
+
+	memset(&g_ns_info, 0, sizeof(g_ns_info));
+	g_ns_info.rtype = rtype;
+	g_ns_info.reg_hostid[0] = g_ctrlr1_A.hostid;
+	g_ns_info.reg_hostid[1] = g_ctrlr_B.hostid;
+	g_ns_info.reg_hostid[2] = g_ctrlr_C.hostid;
+}
+
+static void
+test_reservation_write_exclusive(void)
+{
+	struct spdk_nvmf_request req = {};
+	union nvmf_h2c_msg cmd = {};
+	union nvmf_c2h_msg rsp = {};
+	int rc;
+
+	req.cmd = &cmd;
+	req.rsp = &rsp;
+
+	/* Host A holds reservation with type SPDK_NVME_RESERVE_WRITE_EXCLUSIVE */
+	ut_reservation_init(SPDK_NVME_RESERVE_WRITE_EXCLUSIVE);
+	g_ns_info.holder_id = g_ctrlr1_A.hostid;
+
+	/* Test Case: Issue a Read command from Host A and Host B */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_READ;
+	rc = nvmf_ns_reservation_request_check(&g_ns_info, &g_ctrlr1_A, &req);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	rc = nvmf_ns_reservation_request_check(&g_ns_info, &g_ctrlr_B, &req);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+
+	/* Test Case: Issue a DSM Write command from Host A and Host B */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_DATASET_MANAGEMENT;
+	rc = nvmf_ns_reservation_request_check(&g_ns_info, &g_ctrlr1_A, &req);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	rc = nvmf_ns_reservation_request_check(&g_ns_info, &g_ctrlr_B, &req);
+	SPDK_CU_ASSERT_FATAL(rc < 0);
+	SPDK_CU_ASSERT_FATAL(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_RESERVATION_CONFLICT);
+
+	/* Test Case: Issue a Write command from Host C */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_WRITE;
+	rc = nvmf_ns_reservation_request_check(&g_ns_info, &g_ctrlr_C, &req);
+	SPDK_CU_ASSERT_FATAL(rc < 0);
+	SPDK_CU_ASSERT_FATAL(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_RESERVATION_CONFLICT);
+
+	/* Test Case: Issue a Read command from Host B */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_READ;
+	rc = nvmf_ns_reservation_request_check(&g_ns_info, &g_ctrlr_B, &req);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+
+	/* Unregister Host C */
+	memset(&g_ns_info.reg_hostid[2], 0, sizeof(struct spdk_uuid));
+
+	/* Test Case: Read and Write commands from non-registrant Host C */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_WRITE;
+	rc = nvmf_ns_reservation_request_check(&g_ns_info, &g_ctrlr_C, &req);
+	SPDK_CU_ASSERT_FATAL(rc < 0);
+	SPDK_CU_ASSERT_FATAL(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_RESERVATION_CONFLICT);
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_READ;
+	rc = nvmf_ns_reservation_request_check(&g_ns_info, &g_ctrlr_C, &req);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+}
+
+static void
+test_reservation_exclusive_access(void)
+{
+	struct spdk_nvmf_request req = {};
+	union nvmf_h2c_msg cmd = {};
+	union nvmf_c2h_msg rsp = {};
+	int rc;
+
+	req.cmd = &cmd;
+	req.rsp = &rsp;
+
+	/* Host A holds reservation with type SPDK_NVME_RESERVE_EXCLUSIVE_ACCESS */
+	ut_reservation_init(SPDK_NVME_RESERVE_EXCLUSIVE_ACCESS);
+	g_ns_info.holder_id = g_ctrlr1_A.hostid;
+
+	/* Test Case: Issue a Read command from Host B */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_READ;
+	rc = nvmf_ns_reservation_request_check(&g_ns_info, &g_ctrlr_B, &req);
+	SPDK_CU_ASSERT_FATAL(rc < 0);
+	SPDK_CU_ASSERT_FATAL(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_RESERVATION_CONFLICT);
+
+	/* Test Case: Issue a Reservation Release command from a valid Registrant */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_RESERVATION_RELEASE;
+	rc = nvmf_ns_reservation_request_check(&g_ns_info, &g_ctrlr_B, &req);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+}
+
+static void
+_test_reservation_write_exclusive_regs_only_and_all_regs(enum spdk_nvme_reservation_type rtype)
+{
+	struct spdk_nvmf_request req = {};
+	union nvmf_h2c_msg cmd = {};
+	union nvmf_c2h_msg rsp = {};
+	int rc;
+
+	req.cmd = &cmd;
+	req.rsp = &rsp;
+
+	/* SPDK_NVME_RESERVE_WRITE_EXCLUSIVE_REG_ONLY and SPDK_NVME_RESERVE_WRITE_EXCLUSIVE_ALL_REGS */
+	ut_reservation_init(rtype);
+	g_ns_info.holder_id = g_ctrlr1_A.hostid;
+
+	/* Test Case: Issue a Read command from Host A and Host C */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_READ;
+	rc = nvmf_ns_reservation_request_check(&g_ns_info, &g_ctrlr1_A, &req);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	rc = nvmf_ns_reservation_request_check(&g_ns_info, &g_ctrlr_C, &req);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+
+	/* Test Case: Issue a DSM Write command from Host A and Host C */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_DATASET_MANAGEMENT;
+	rc = nvmf_ns_reservation_request_check(&g_ns_info, &g_ctrlr1_A, &req);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	rc = nvmf_ns_reservation_request_check(&g_ns_info, &g_ctrlr_C, &req);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+
+	/* Unregister Host C */
+	memset(&g_ns_info.reg_hostid[2], 0, sizeof(struct spdk_uuid));
+
+	/* Test Case: Read and Write commands from non-registrant Host C */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_READ;
+	rc = nvmf_ns_reservation_request_check(&g_ns_info, &g_ctrlr_C, &req);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_WRITE;
+	rc = nvmf_ns_reservation_request_check(&g_ns_info, &g_ctrlr_C, &req);
+	SPDK_CU_ASSERT_FATAL(rc < 0);
+	SPDK_CU_ASSERT_FATAL(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_RESERVATION_CONFLICT);
+}
+
+static void
+test_reservation_write_exclusive_regs_only_and_all_regs(void)
+{
+	_test_reservation_write_exclusive_regs_only_and_all_regs(
+		SPDK_NVME_RESERVE_WRITE_EXCLUSIVE_REG_ONLY);
+	_test_reservation_write_exclusive_regs_only_and_all_regs(
+		SPDK_NVME_RESERVE_WRITE_EXCLUSIVE_ALL_REGS);
+}
+
+static void
+_test_reservation_exclusive_access_regs_only_and_all_regs(enum spdk_nvme_reservation_type rtype)
+{
+	struct spdk_nvmf_request req = {};
+	union nvmf_h2c_msg cmd = {};
+	union nvmf_c2h_msg rsp = {};
+	int rc;
+
+	req.cmd = &cmd;
+	req.rsp = &rsp;
+
+	/* SPDK_NVME_RESERVE_EXCLUSIVE_ACCESS_REG_ONLY and SPDK_NVME_RESERVE_EXCLUSIVE_ACCESS_ALL_REGS */
+	ut_reservation_init(rtype);
+	g_ns_info.holder_id = g_ctrlr1_A.hostid;
+
+	/* Test Case: Issue a Write command from Host B */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_WRITE;
+	rc = nvmf_ns_reservation_request_check(&g_ns_info, &g_ctrlr_B, &req);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+
+	/* Unregister Host B */
+	memset(&g_ns_info.reg_hostid[1], 0, sizeof(struct spdk_uuid));
+
+	/* Test Case: Issue a Read command from Host B */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_READ;
+	rc = nvmf_ns_reservation_request_check(&g_ns_info, &g_ctrlr_B, &req);
+	SPDK_CU_ASSERT_FATAL(rc < 0);
+	SPDK_CU_ASSERT_FATAL(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_RESERVATION_CONFLICT);
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_WRITE;
+	rc = nvmf_ns_reservation_request_check(&g_ns_info, &g_ctrlr_B, &req);
+	SPDK_CU_ASSERT_FATAL(rc < 0);
+	SPDK_CU_ASSERT_FATAL(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_RESERVATION_CONFLICT);
+}
+
+static void
+test_reservation_exclusive_access_regs_only_and_all_regs(void)
+{
+	_test_reservation_exclusive_access_regs_only_and_all_regs(
+		SPDK_NVME_RESERVE_EXCLUSIVE_ACCESS_REG_ONLY);
+	_test_reservation_exclusive_access_regs_only_and_all_regs(
+		SPDK_NVME_RESERVE_EXCLUSIVE_ACCESS_ALL_REGS);
+}
+
+static void
+test_reservation_notification_log_page(void)
+{
+	struct spdk_nvmf_ctrlr ctrlr;
+	struct spdk_nvmf_qpair qpair;
+	struct spdk_nvmf_ns ns;
+	struct spdk_nvmf_request req;
+	union nvmf_h2c_msg cmd;
+	union nvmf_c2h_msg rsp;
+	union spdk_nvme_async_event_completion event = {0};
+	struct spdk_nvme_reservation_notification_log logs[3];
+
+	memset(&ctrlr, 0, sizeof(ctrlr));
+	ctrlr.thread = spdk_get_thread();
+	TAILQ_INIT(&ctrlr.log_head);
+	ns.nsid = 1;
+
+	/* Test Case: Mask all the reservation notifications */
+	ns.mask = SPDK_NVME_REGISTRATION_PREEMPTED_MASK |
+		  SPDK_NVME_RESERVATION_RELEASED_MASK |
+		  SPDK_NVME_RESERVATION_PREEMPTED_MASK;
+	spdk_nvmf_ctrlr_reservation_notice_log(&ctrlr, &ns,
+					       SPDK_NVME_REGISTRATION_PREEMPTED);
+	spdk_nvmf_ctrlr_reservation_notice_log(&ctrlr, &ns,
+					       SPDK_NVME_RESERVATION_RELEASED);
+	spdk_nvmf_ctrlr_reservation_notice_log(&ctrlr, &ns,
+					       SPDK_NVME_RESERVATION_PREEMPTED);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(TAILQ_EMPTY(&ctrlr.log_head));
+
+	/* Test Case: Unmask all the reservation notifications,
+	 * 3 log pages are generated, and AER was triggered.
+	 */
+	ns.mask = 0;
+	ctrlr.num_avail_log_pages = 0;
+	req.cmd = &cmd;
+	req.rsp = &rsp;
+	ctrlr.aer_req = &req;
+	req.qpair = &qpair;
+	TAILQ_INIT(&qpair.outstanding);
+	qpair.state = SPDK_NVMF_QPAIR_ACTIVE;
+	TAILQ_INSERT_TAIL(&qpair.outstanding, &req, link);
+
+	spdk_nvmf_ctrlr_reservation_notice_log(&ctrlr, &ns,
+					       SPDK_NVME_REGISTRATION_PREEMPTED);
+	spdk_nvmf_ctrlr_reservation_notice_log(&ctrlr, &ns,
+					       SPDK_NVME_RESERVATION_RELEASED);
+	spdk_nvmf_ctrlr_reservation_notice_log(&ctrlr, &ns,
+					       SPDK_NVME_RESERVATION_PREEMPTED);
+	poll_threads();
+	event.raw = rsp.nvme_cpl.cdw0;
+	SPDK_CU_ASSERT_FATAL(event.bits.async_event_type == SPDK_NVME_ASYNC_EVENT_TYPE_IO);
+	SPDK_CU_ASSERT_FATAL(event.bits.async_event_info == SPDK_NVME_ASYNC_EVENT_RESERVATION_LOG_AVAIL);
+	SPDK_CU_ASSERT_FATAL(event.bits.log_page_identifier == SPDK_NVME_LOG_RESERVATION_NOTIFICATION);
+	SPDK_CU_ASSERT_FATAL(ctrlr.num_avail_log_pages == 3);
+
+	/* Test Case: Get Log Page to clear the log pages */
+	spdk_nvmf_get_reservation_notification_log_page(&ctrlr, (void *)logs, 0, sizeof(logs));
+	SPDK_CU_ASSERT_FATAL(ctrlr.num_avail_log_pages == 0);
+}
+
 int main(int argc, char **argv)
 {
 	CU_pSuite	suite = NULL;
@@ -839,7 +1120,15 @@ int main(int argc, char **argv)
 		CU_add_test(suite, "process_fabrics_cmd", test_process_fabrics_cmd) == NULL ||
 		CU_add_test(suite, "connect", test_connect) == NULL ||
 		CU_add_test(suite, "get_ns_id_desc_list", test_get_ns_id_desc_list) == NULL ||
-		CU_add_test(suite, "identify_ns", test_identify_ns) == NULL
+		CU_add_test(suite, "identify_ns", test_identify_ns) == NULL ||
+		CU_add_test(suite, "reservation_write_exclusive", test_reservation_write_exclusive) == NULL ||
+		CU_add_test(suite, "reservation_exclusive_access", test_reservation_exclusive_access) == NULL ||
+		CU_add_test(suite, "reservation_write_exclusive_regs_only_and_all_regs",
+			    test_reservation_write_exclusive_regs_only_and_all_regs) == NULL ||
+		CU_add_test(suite, "reservation_exclusive_access_regs_only_and_all_regs",
+			    test_reservation_exclusive_access_regs_only_and_all_regs) == NULL ||
+		CU_add_test(suite, "reservation_notification_log_page",
+			    test_reservation_notification_log_page) == NULL
 	) {
 		CU_cleanup_registry();
 		return CU_get_error();

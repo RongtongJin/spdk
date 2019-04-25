@@ -17,12 +17,13 @@ from common import *
 
 
 class Server:
-    def __init__(self, name, username, password, mode, rdma_ips):
+    def __init__(self, name, username, password, mode, nic_ips, transport):
         self.name = name
         self.mode = mode
         self.username = username
         self.password = password
-        self.rdma_ips = rdma_ips
+        self.nic_ips = nic_ips
+        self.transport = transport.lower()
 
         if not re.match("^[A-Za-z0-9]*$", name):
             self.log_print("Please use a name which contains only letters or numbers")
@@ -33,8 +34,8 @@ class Server:
 
 
 class Target(Server):
-    def __init__(self, name, username, password, mode, rdma_ips, use_null_block=False, sar_settings=None):
-        super(Target, self).__init__(name, username, password, mode, rdma_ips)
+    def __init__(self, name, username, password, mode, nic_ips, transport="rdma", use_null_block=False, sar_settings=None):
+        super(Target, self).__init__(name, username, password, mode, nic_ips, transport)
         self.null_block = bool(use_null_block)
         self.enable_sar = False
         if sar_settings:
@@ -154,10 +155,10 @@ class Target(Server):
             total = ["{0:.3f}".format(sum(c)) for c in zip(*inits_avg_results)]
             rows.add(",".join([job_name, *total]))
 
-            # Save results to file
-            for row in rows:
-                with open(os.path.join(results_dir, csv_file), "a") as fh:
-                    fh.write(row + "\n")
+        # Save results to file
+        for row in rows:
+            with open(os.path.join(results_dir, csv_file), "a") as fh:
+                fh.write(row + "\n")
 
     def measure_sar(self, results_dir, sar_file_name):
         self.log_print("Waiting %d delay before measuring SAR stats" % self.sar_delay)
@@ -174,18 +175,21 @@ class Target(Server):
 
 
 class Initiator(Server):
-    def __init__(self, name, username, password, mode, rdma_ips, ip, workspace="/tmp/spdk"):
-        super(Initiator, self).__init__(name, username, password, mode, rdma_ips)
+    def __init__(self, name, username, password, mode, nic_ips, ip, transport="rdma", nvmecli_dir=None, workspace="/tmp/spdk"):
+        super(Initiator, self).__init__(name, username, password, mode, nic_ips, transport)
         self.ip = ip
         self.spdk_dir = workspace
+
+        if nvmecli_dir:
+            self.nvmecli_bin = os.path.join(nvmecli_dir, "nvme")
+        else:
+            self.nvmecli_bin = "nvme"  # Use system-wide nvme-cli
 
         self.ssh_connection = paramiko.SSHClient()
         self.ssh_connection.set_missing_host_key_policy(paramiko.AutoAddPolicy)
         self.ssh_connection.connect(self.ip, username=self.username, password=self.password)
-        stdin, stdout, stderr = self.ssh_connection.exec_command("sudo rm -rf %s/nvmf_perf" % self.spdk_dir)
-        stdout.channel.recv_exit_status()
-        stdin, stdout, stderr = self.ssh_connection.exec_command("mkdir -p %s" % self.spdk_dir)
-        stdout.channel.recv_exit_status()
+        self.remote_call("sudo rm -rf %s/nvmf_perf" % self.spdk_dir)
+        self.remote_call("mkdir -p %s" % self.spdk_dir)
 
     def __del__(self):
         self.ssh_connection.close()
@@ -200,6 +204,12 @@ class Initiator(Server):
         ftp.get(remote, local_dest)
         ftp.close()
 
+    def remote_call(self, cmd):
+        stdin, stdout, stderr = self.ssh_connection.exec_command(cmd)
+        out = stdout.read().decode(encoding="utf-8")
+        err = stderr.read().decode(encoding="utf-8")
+        return out, err
+
     def copy_result_files(self, dest_dir):
         self.log_print("Copying results")
 
@@ -207,9 +217,9 @@ class Initiator(Server):
             os.mkdir(dest_dir)
 
         # Get list of result files from initiator and copy them back to target
-        stdin, stdout, stderr = self.ssh_connection.exec_command("ls %s/nvmf_perf" % self.spdk_dir)
+        stdout, stderr = self.remote_call("ls %s/nvmf_perf" % self.spdk_dir)
+        file_list = stdout.strip().split("\n")
 
-        file_list = stdout.read().decode(encoding="utf-8").strip().split("\n")
         for file in file_list:
             self.get_file(os.path.join(self.spdk_dir, "nvmf_perf", file),
                           os.path.join(dest_dir, file))
@@ -220,13 +230,16 @@ class Initiator(Server):
         nvme_discover_output = ""
         for ip, subsys_no in itertools.product(address_list, num_nvmes):
             self.log_print("Trying to discover: %s:%s" % (ip, 4420 + subsys_no))
-            nvme_discover_cmd = ["sudo", "nvme", "discover", "-t rdma", "-s %s" % (4420 + subsys_no), "-a %s" % ip]
+            nvme_discover_cmd = ["sudo",
+                                 "%s" % self.nvmecli_bin,
+                                 "discover", "-t %s" % self.transport,
+                                 "-s %s" % (4420 + subsys_no),
+                                 "-a %s" % ip]
             nvme_discover_cmd = " ".join(nvme_discover_cmd)
 
-            stdin, stdout, stderr = self.ssh_connection.exec_command(nvme_discover_cmd)
-            out = stdout.read().decode(encoding="utf-8")
-            if out:
-                nvme_discover_output = nvme_discover_output + out
+            stdout, stderr = self.remote_call(nvme_discover_cmd)
+            if stdout:
+                nvme_discover_output = nvme_discover_output + stdout
 
         subsystems = re.findall(r'trsvcid:\s(\d+)\s+'  # get svcid number
                                 r'subnqn:\s+([a-zA-Z0-9\.\-\:]+)\s+'  # get NQN id
@@ -260,9 +273,9 @@ ramp_time={ramp_time}
 runtime={run_time}
 """
         if "spdk" in self.mode:
-            subsystems = self.discover_subsystems(self.rdma_ips, subsys_no)
+            subsystems = self.discover_subsystems(self.nic_ips, subsys_no)
             bdev_conf = self.gen_spdk_bdev_conf(subsystems)
-            stdin, stdout, stderr = self.ssh_connection.exec_command("echo '%s' > %s/bdev.conf" % (bdev_conf, self.spdk_dir))
+            self.remote_call("echo '%s' > %s/bdev.conf" % (bdev_conf, self.spdk_dir))
             ioengine = "%s/examples/bdev/fio_plugin/fio_plugin" % self.spdk_dir
             spdk_conf = "spdk_conf=%s/bdev.conf" % self.spdk_dir
             filename_section = self.gen_fio_filename_conf(subsystems)
@@ -283,10 +296,8 @@ runtime={run_time}
             fio_config_filename += "_%sCPU" % self.num_cores
         fio_config_filename += ".fio"
 
-        stdin, stdout, stderr = self.ssh_connection.exec_command("mkdir -p %s/nvmf_perf" % self.spdk_dir)
-        stdin, stdout, stderr = self.ssh_connection.exec_command(
-            "echo '%s' > %s/nvmf_perf/%s" % (fio_config, self.spdk_dir, fio_config_filename))
-        stdout.channel.recv_exit_status()
+        self.remote_call("mkdir -p %s/nvmf_perf" % self.spdk_dir)
+        self.remote_call("echo '%s' > %s/nvmf_perf/%s" % (fio_config, self.spdk_dir, fio_config_filename))
         self.log_print("Created FIO Config:")
         self.log_print(fio_config)
 
@@ -299,25 +310,23 @@ runtime={run_time}
             for i in range(1, run_num + 1):
                 output_filename = job_name + "_run_" + str(i) + "_" + self.name + ".json"
                 cmd = "sudo /usr/src/fio/fio %s --output-format=json --output=%s" % (fio_config_file, output_filename)
-                stdin, stdout, stderr = self.ssh_connection.exec_command(cmd)
-                output = stdout.read().decode(encoding="utf-8")
-                error = stderr.read().decode(encoding="utf-8")
+                output, error = self.remote_call(cmd)
                 self.log_print(output)
                 self.log_print(error)
         else:
             output_filename = job_name + "_" + self.name + ".json"
             cmd = "sudo /usr/src/fio/fio %s --output-format=json --output=%s" % (fio_config_file, output_filename)
-            stdin, stdout, stderr = self.ssh_connection.exec_command(cmd)
-            output = stdout.read().decode(encoding="utf-8")
-            error = stderr.read().decode(encoding="utf-8")
+            output, error = self.remote_call(cmd)
             self.log_print(output)
             self.log_print(error)
         self.log_print("FIO run finished. Results in: %s" % output_filename)
 
 
 class KernelTarget(Target):
-    def __init__(self, name, username, password, mode, rdma_ips, use_null_block=False, sar_settings=None, nvmet_dir=None, **kwargs):
-        super(KernelTarget, self).__init__(name, username, password, mode, rdma_ips, use_null_block, sar_settings)
+    def __init__(self, name, username, password, mode, nic_ips,
+                 use_null_block=False, sar_settings=None, transport="rdma", nvmet_dir=None, **kwargs):
+        super(KernelTarget, self).__init__(name, username, password, mode, nic_ips,
+                                           transport, use_null_block, sar_settings)
 
         if nvmet_dir:
             self.nvmet_bin = os.path.join(nvmet_dir, "nvmetcli")
@@ -358,7 +367,7 @@ class KernelTarget(Target):
                 "adrfam": "ipv4",
                 "traddr": address,
                 "trsvcid": "4420",
-                "trtype": "rdma"
+                "trtype": "%s" % self.transport,
             },
             "portid": 1,
             "referrals": [],
@@ -407,7 +416,7 @@ class KernelTarget(Target):
                         "adrfam": "ipv4",
                         "traddr": ip,
                         "trsvcid": "%s" % (4420 + port_no),
-                        "trtype": "rdma"
+                        "trtype": "%s" % self.transport
                     },
                     "portid": subsys_no,
                     "referrals": [],
@@ -425,16 +434,16 @@ class KernelTarget(Target):
 
         if self.null_block:
             print("Configuring with null block device.")
-            if len(self.rdma_ips) > 1:
+            if len(self.nic_ips) > 1:
                 print("Testing with null block limited to single RDMA NIC.")
                 print("Please specify only 1 IP address.")
                 exit(1)
             self.subsys_no = 1
-            self.kernel_tgt_gen_nullblock_conf(self.rdma_ips[0])
+            self.kernel_tgt_gen_nullblock_conf(self.nic_ips[0])
         else:
             print("Configuring with NVMe drives.")
             nvme_list = get_nvme_devices()
-            self.kernel_tgt_gen_subsystem_conf(nvme_list, self.rdma_ips)
+            self.kernel_tgt_gen_subsystem_conf(nvme_list, self.nic_ips)
             self.subsys_no = len(nvme_list)
 
         nvmet_command(self.nvmet_bin, "clear")
@@ -443,9 +452,9 @@ class KernelTarget(Target):
 
 
 class SPDKTarget(Target):
-    def __init__(self, name, username, password, mode, rdma_ips, num_cores, num_shared_buffers=4096,
-                 use_null_block=False, sar_settings=None, **kwargs):
-        super(SPDKTarget, self).__init__(name, username, password, mode, rdma_ips, use_null_block, sar_settings)
+    def __init__(self, name, username, password, mode, nic_ips, num_cores, num_shared_buffers=4096,
+                 use_null_block=False, sar_settings=None, transport="rdma", **kwargs):
+        super(SPDKTarget, self).__init__(name, username, password, mode, nic_ips, transport, use_null_block, sar_settings)
         self.num_cores = num_cores
         self.num_shared_buffers = num_shared_buffers
 
@@ -454,16 +463,16 @@ class SPDKTarget(Target):
         numa_list = get_used_numa_nodes()
 
         # Create RDMA transport layer
-        rpc.nvmf.nvmf_create_transport(self.client, trtype="RDMA", num_shared_buffers=self.num_shared_buffers)
+        rpc.nvmf.nvmf_create_transport(self.client, trtype=self.transport, num_shared_buffers=self.num_shared_buffers)
         self.log_print("SPDK NVMeOF transport layer:")
         rpc.client.print_dict(rpc.nvmf.get_nvmf_transports(self.client))
 
         if self.null_block:
             nvme_section = self.spdk_tgt_add_nullblock()
-            subsystems_section = self.spdk_tgt_add_subsystem_conf(self.rdma_ips, req_num_disks=1)
+            subsystems_section = self.spdk_tgt_add_subsystem_conf(self.nic_ips, req_num_disks=1)
         else:
             nvme_section = self.spdk_tgt_add_nvme_conf()
-            subsystems_section = self.spdk_tgt_add_subsystem_conf(self.rdma_ips)
+            subsystems_section = self.spdk_tgt_add_subsystem_conf(self.nic_ips)
         self.log_print("Done configuring SPDK NVMeOF Target")
 
     def spdk_tgt_add_nullblock(self):
@@ -512,7 +521,7 @@ class SPDKTarget(Target):
                 rpc.nvmf.nvmf_subsystem_add_ns(self.client, nqn, bdev_name)
 
                 rpc.nvmf.nvmf_subsystem_add_listener(self.client, nqn,
-                                                     trtype="RDMA",
+                                                     trtype=self.transport,
                                                      traddr=ip,
                                                      trsvcid="4420",
                                                      adrfam="ipv4")
@@ -553,8 +562,8 @@ class SPDKTarget(Target):
 
 
 class KernelInitiator(Initiator):
-    def __init__(self, name, username, password, mode, rdma_ips, ip, **kwargs):
-        super(KernelInitiator, self).__init__(name, username, password, mode, rdma_ips, ip)
+    def __init__(self, name, username, password, mode, nic_ips, ip, transport, **kwargs):
+        super(KernelInitiator, self).__init__(name, username, password, mode, nic_ips, ip, transport)
 
     def __del__(self):
         self.ssh_connection.close()
@@ -564,20 +573,17 @@ class KernelInitiator(Initiator):
         self.log_print("Below connection attempts may result in error messages, this is expected!")
         for subsystem in subsystems:
             self.log_print("Trying to connect %s %s %s" % subsystem)
-            cmd = "sudo nvme connect -t rdma -s %s -n %s -a %s" % subsystem
-            stdin, stdout, stderr = self.ssh_connection.exec_command(cmd)
+            self.remote_call("sudo %s connect -t %s -s %s -n %s -a %s -i 8" % (self.nvmecli_bin, self.transport, *subsystem))
             time.sleep(2)
 
     def kernel_init_disconnect(self, address_list, subsys_no):
         subsystems = self.discover_subsystems(address_list, subsys_no)
         for subsystem in subsystems:
-            cmd = "sudo nvme disconnect -n %s" % subsystem[1]
-            stdin, stdout, stderr = self.ssh_connection.exec_command(cmd)
+            self.remote_call("sudo %s disconnect -n %s" % (self.nvmecli_bin, subsystem[1]))
             time.sleep(1)
 
     def gen_fio_filename_conf(self):
-        stdin, stdout, stderr = self.ssh_connection.exec_command("lsblk -o NAME -nlp")
-        out = stdout.read().decode(encoding="utf-8")
+        out, err = self.remote_call("lsblk -o NAME -nlp")
         nvme_list = [x for x in out.split("\n") if "nvme" in x]
 
         filename_section = ""
@@ -590,32 +596,29 @@ class KernelInitiator(Initiator):
 
 
 class SPDKInitiator(Initiator):
-    def __init__(self, name, username, password, mode, rdma_ips, ip, num_cores=None, **kwargs):
-        super(SPDKInitiator, self).__init__(name, username, password, mode, rdma_ips, ip)
+    def __init__(self, name, username, password, mode, nic_ips, ip, num_cores=None, transport="rdma", **kwargs):
+        super(SPDKInitiator, self).__init__(name, username, password, mode, nic_ips, ip, transport)
         if num_cores:
             self.num_cores = num_cores
 
     def install_spdk(self, local_spdk_zip):
         self.put_file(local_spdk_zip, "/tmp/spdk_drop.zip")
         self.log_print("Copied sources zip from target")
-        stdin, stdout, stderr = self.ssh_connection.exec_command("unzip -qo /tmp/spdk_drop.zip -d %s" % self.spdk_dir)
-        stdout.channel.recv_exit_status()
+        self.remote_call("unzip -qo /tmp/spdk_drop.zip -d %s" % self.spdk_dir)
 
         self.log_print("Sources unpacked")
-        stdin, stdout, stderr = self.ssh_connection.exec_command(
-            "cd %s; git submodule update --init; ./configure --with-rdma --with-fio=/usr/src/fio;"
-            "make clean; make -j$(($(nproc)*2))" % self.spdk_dir)
-        stdout.channel.recv_exit_status()
+        self.remote_call("cd %s; git submodule update --init; ./configure --with-rdma --with-fio=/usr/src/fio;"
+                         "make clean; make -j$(($(nproc)*2))" % self.spdk_dir)
 
         self.log_print("SPDK built")
-        stdin, stdout, stderr = self.ssh_connection.exec_command("sudo %s/scripts/setup.sh" % self.spdk_dir)
-        stdout.channel.recv_exit_status()
+        self.remote_call("sudo %s/scripts/setup.sh" % self.spdk_dir)
 
     def gen_spdk_bdev_conf(self, remote_subsystem_list):
         header = "[Nvme]"
-        row_template = """  TransportId "trtype:RDMA adrfam:IPv4 traddr:{ip} trsvcid:{svc} subnqn:{nqn}" Nvme{i}"""
+        row_template = """  TransportId "trtype:{transport} adrfam:IPv4 traddr:{ip} trsvcid:{svc} subnqn:{nqn}" Nvme{i}"""
 
-        bdev_rows = [row_template.format(svc=x[0],
+        bdev_rows = [row_template.format(transport=self.transport,
+                                         svc=x[0],
                                          nqn=x[1],
                                          ip=x[2],
                                          i=i) for i, x in enumerate(remote_subsystem_list)]
@@ -655,21 +658,17 @@ if __name__ == "__main__":
     initiators = []
     fio_cases = []
 
-    # Read user/pass first as order of objects is undeffined
-    uname = data['general']["username"]
-    passwd = data['general']["password"]
-
     for k, v in data.items():
         if "target" in k:
             if data[k]["mode"] == "spdk":
-                target_obj = SPDKTarget(name=k, username=uname, password=passwd, **v)
+                target_obj = SPDKTarget(name=k, **data["general"], **v)
             elif data[k]["mode"] == "kernel":
-                target_obj = KernelTarget(name=k, username=uname, password=passwd, **v)
+                target_obj = KernelTarget(name=k, **data["general"], **v)
         elif "initiator" in k:
             if data[k]["mode"] == "spdk":
-                init_obj = SPDKInitiator(name=k, username=uname, password=passwd, **v)
+                init_obj = SPDKInitiator(name=k, **data["general"], **v)
             elif data[k]["mode"] == "kernel":
-                init_obj = KernelInitiator(name=k, username=uname, password=passwd, **v)
+                init_obj = KernelInitiator(name=k, **data["general"], **v)
             initiators.append(init_obj)
         elif "fio" in k:
             fio_workloads = itertools.product(data[k]["bs"],
@@ -704,7 +703,7 @@ if __name__ == "__main__":
         configs = []
         for i in initiators:
             if i.mode == "kernel":
-                i.kernel_init_connect(i.rdma_ips, target_obj.subsys_no)
+                i.kernel_init_connect(i.nic_ips, target_obj.subsys_no)
 
             cfg = i.gen_fio_config(rw, fio_rw_mix_read, block_size, io_depth, target_obj.subsys_no,
                                    fio_num_jobs, fio_ramp_time, fio_run_time)
@@ -726,7 +725,7 @@ if __name__ == "__main__":
 
         for i in initiators:
             if i.mode == "kernel":
-                i.kernel_init_disconnect(i.rdma_ips, target_obj.subsys_no)
+                i.kernel_init_disconnect(i.nic_ips, target_obj.subsys_no)
             i.copy_result_files(target_results_dir)
 
     target_obj.parse_results(target_results_dir)

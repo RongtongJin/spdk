@@ -285,7 +285,6 @@ int main(int argc, char **argv)
 {
 	void			*history_ptr;
 	struct spdk_trace_history *history;
-	struct spdk_trace_histories *histories;
 	int			fd, i, rc;
 	int			lcore = SPDK_TRACE_MAX_LCORE;
 	uint64_t		tsc_offset;
@@ -409,17 +408,10 @@ int main(int argc, char **argv)
 
 	g_histories = (struct spdk_trace_histories *)history_ptr;
 
-	histories = (struct spdk_trace_histories *)malloc(trace_histories_size);
-	if (histories == NULL) {
-		goto cleanup;
-	}
-
-	memcpy(histories, g_histories, trace_histories_size);
-
 	if (lcore == SPDK_TRACE_MAX_LCORE) {
 		for (i = 0; i < SPDK_TRACE_MAX_LCORE; i++) {
-			history = spdk_get_per_lcore_history(histories, i);
-			if (history->entries[0].tsc == 0) {
+			history = spdk_get_per_lcore_history(g_histories, i);
+			if (history->num_entries == 0 || history->entries[0].tsc == 0) {
 				continue;
 			}
 
@@ -430,8 +422,8 @@ int main(int argc, char **argv)
 			populate_events(history, history->num_entries);
 		}
 	} else {
-		history = spdk_get_per_lcore_history(histories, lcore);
-		if (history->entries[0].tsc != 0) {
+		history = spdk_get_per_lcore_history(g_histories, lcore);
+		if (history->num_entries > 0 && history->entries[0].tsc != 0) {
 			if (g_verbose && history->num_entries) {
 				printf("Trace Size of lcore (%d): %ju\n", lcore, history->num_entries);
 			}
@@ -448,9 +440,6 @@ int main(int argc, char **argv)
 		process_event(it->second, g_tsc_rate, tsc_offset, it->first.lcore);
 	}
 
-	free(histories);
-
-cleanup:
 	munmap(history_ptr, trace_histories_size);
 	close(fd);
 

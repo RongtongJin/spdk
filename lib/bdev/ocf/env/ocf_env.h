@@ -52,6 +52,7 @@
 #include "spdk_internal/log.h"
 
 #include "ocf_env_list.h"
+#include "ocf/ocf_err.h"
 
 typedef uint8_t u8;
 typedef uint16_t u16;
@@ -115,34 +116,38 @@ typedef uint64_t sector_t;
 
 static inline void *env_malloc(size_t size, int flags)
 {
-	return spdk_dma_malloc(size, 0, NULL);
+	return spdk_malloc(size, 0, NULL, SPDK_ENV_LCORE_ID_ANY,
+			   SPDK_MALLOC_DMA);
 }
 
 static inline void *env_zalloc(size_t size, int flags)
 {
-	return spdk_dma_zmalloc(size, 0, NULL);
+	return spdk_zmalloc(size, 0, NULL, SPDK_ENV_LCORE_ID_ANY,
+			    SPDK_MALLOC_DMA);
 }
 
 static inline void env_free(const void *ptr)
 {
-	return spdk_dma_free((void *)ptr);
+	return spdk_free((void *)ptr);
 }
 
 static inline void *env_vmalloc(size_t size)
 {
-	return spdk_dma_malloc(size, 0, NULL);
+	return spdk_malloc(size, 0, NULL, SPDK_ENV_LCORE_ID_ANY,
+			   SPDK_MALLOC_DMA);
 }
 
 static inline void *env_vzalloc(size_t size)
 {
 	/* TODO: raw_ram init can request huge amount of memory to store
 	 * hashtable in it. need to ensure that allocation succedds */
-	return spdk_dma_zmalloc(size, 0, NULL);
+	return spdk_zmalloc(size, 0, NULL, SPDK_ENV_LCORE_ID_ANY,
+			    SPDK_MALLOC_DMA);
 }
 
 static inline void env_vfree(const void *ptr)
 {
-	return spdk_dma_free((void *)ptr);
+	return spdk_free((void *)ptr);
 }
 
 static inline uint64_t env_get_free_memory(void)
@@ -155,7 +160,10 @@ static inline uint64_t env_get_free_memory(void)
 
 #define OCF_ALLOCATOR_NAME_MAX 128
 
-typedef struct spdk_mempool env_allocator;
+typedef struct {
+	struct spdk_mempool *mempool;
+	size_t element_size;
+} env_allocator;
 
 env_allocator *env_allocator_create(uint32_t size, const char *name);
 
@@ -191,10 +199,7 @@ static inline int env_mutex_lock_interruptible(env_mutex *mutex)
 
 static inline int env_mutex_trylock(env_mutex *mutex)
 {
-	if (pthread_mutex_trylock(&mutex->m) == 0) {
-		return 1;
-	}
-	return 0;
+	return pthread_mutex_trylock(&mutex->m) ? -OCF_ERR_NO_LOCK : 0;
 }
 
 static inline void env_mutex_unlock(env_mutex *mutex)
@@ -204,7 +209,7 @@ static inline void env_mutex_unlock(env_mutex *mutex)
 
 static inline int env_mutex_is_locked(env_mutex *mutex)
 {
-	if (env_mutex_trylock(mutex)) {
+	if (env_mutex_trylock(mutex) == 0) {
 		env_mutex_unlock(mutex);
 		return 0;
 	}
@@ -268,13 +273,7 @@ static inline void env_rwsem_down_read(env_rwsem *s)
 
 static inline int env_rwsem_down_read_trylock(env_rwsem *s)
 {
-	int result = pthread_rwlock_tryrdlock(&s->lock);
-
-	if (result == 0) {
-		return 1;
-	} else {
-		return 0;
-	}
+	return pthread_rwlock_tryrdlock(&s->lock) ? -OCF_ERR_NO_LOCK : 0;
 }
 
 static inline void env_rwsem_up_write(env_rwsem *s)
@@ -289,27 +288,17 @@ static inline void env_rwsem_down_write(env_rwsem *s)
 
 static inline int env_rwsem_down_write_trylock(env_rwsem *s)
 {
-	int result = pthread_rwlock_trywrlock(&s->lock);
-
-	if (result == 0) {
-		return 1;
-	} else {
-		return 0;
-	}
+	return pthread_rwlock_trywrlock(&s->lock) ? -OCF_ERR_NO_LOCK : 0;
 }
 
 static inline int env_rwsem_is_locked(env_rwsem *s)
 {
-	if (env_rwsem_down_write_trylock(s)) {
-		env_rwsem_up_write(s);
-		return 1;
-	}
-	if (env_rwsem_down_read_trylock(s)) {
+	if (env_rwsem_down_read_trylock(s) == 0) {
 		env_rwsem_up_read(s);
-		return 1;
+		return 0;
 	}
 
-	return 0;
+	return 1;
 }
 
 static inline int env_rwsem_down_read_interruptible(env_rwsem *s)

@@ -44,6 +44,7 @@
 #include "spdk/queue.h"
 #include "spdk/nvme_spec.h"
 #include "spdk/scsi_spec.h"
+#include "spdk/notify.h"
 #include "spdk/util.h"
 #include "spdk/trace.h"
 
@@ -423,6 +424,11 @@ spdk_bdev_io_set_buf(struct spdk_bdev_io *bdev_io, void *buf, size_t len)
 {
 	struct iovec *iovs;
 
+	if (bdev_io->u.bdev.iovs == NULL) {
+		bdev_io->u.bdev.iovs = &bdev_io->iov;
+		bdev_io->u.bdev.iovcnt = 1;
+	}
+
 	iovs = bdev_io->u.bdev.iovs;
 
 	assert(iovs != NULL);
@@ -435,6 +441,10 @@ spdk_bdev_io_set_buf(struct spdk_bdev_io *bdev_io, void *buf, size_t len)
 static bool
 _is_buf_allocated(struct iovec *iovs)
 {
+	if (iovs == NULL) {
+		return false;
+	}
+
 	return iovs[0].iov_base != NULL;
 }
 
@@ -584,7 +594,6 @@ spdk_bdev_io_get_buf(struct spdk_bdev_io *bdev_io, spdk_bdev_io_get_buf_cb cb, u
 	bool buf_allocated;
 
 	assert(cb != NULL);
-	assert(bdev_io->u.bdev.iovs != NULL);
 
 	alignment = spdk_bdev_get_buf_align(bdev_io->bdev);
 	buf_allocated = _is_buf_allocated(bdev_io->u.bdev.iovs);
@@ -715,11 +724,11 @@ spdk_bdev_subsystem_config_json(struct spdk_json_write_ctx *w)
 	}
 
 	TAILQ_FOREACH(bdev, &g_bdev_mgr.bdevs, internal.link) {
-		spdk_bdev_qos_config_json(bdev, w);
-
 		if (bdev->fn_table->write_config_json) {
 			bdev->fn_table->write_config_json(bdev, w);
 		}
+
+		spdk_bdev_qos_config_json(bdev, w);
 	}
 
 	spdk_json_write_array_end(w);
@@ -920,6 +929,9 @@ spdk_bdev_initialize(spdk_bdev_init_cb cb_fn, void *cb_arg)
 	g_init_cb_fn = cb_fn;
 	g_init_cb_arg = cb_arg;
 
+	spdk_notify_type_register("bdev_register");
+	spdk_notify_type_register("bdev_unregister");
+
 	snprintf(mempool_name, sizeof(mempool_name), "bdev_io_%d", getpid());
 
 	g_bdev_mgr.bdev_io_pool = spdk_mempool_create(mempool_name,
@@ -970,8 +982,8 @@ spdk_bdev_initialize(spdk_bdev_init_cb cb_fn, void *cb_arg)
 		return;
 	}
 
-	g_bdev_mgr.zero_buffer = spdk_dma_zmalloc(ZERO_BUFFER_SIZE, ZERO_BUFFER_SIZE,
-				 NULL);
+	g_bdev_mgr.zero_buffer = spdk_zmalloc(ZERO_BUFFER_SIZE, ZERO_BUFFER_SIZE,
+					      NULL, SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
 	if (!g_bdev_mgr.zero_buffer) {
 		SPDK_ERRLOG("create bdev zero buffer failed\n");
 		spdk_bdev_init_complete(-1);
@@ -1026,7 +1038,7 @@ spdk_bdev_mgr_unregister_cb(void *io_device)
 	spdk_mempool_free(g_bdev_mgr.bdev_io_pool);
 	spdk_mempool_free(g_bdev_mgr.buf_small_pool);
 	spdk_mempool_free(g_bdev_mgr.buf_large_pool);
-	spdk_dma_free(g_bdev_mgr.zero_buffer);
+	spdk_free(g_bdev_mgr.zero_buffer);
 
 	cb_fn(g_fini_cb_arg);
 	g_fini_cb_fn = NULL;
@@ -1194,10 +1206,12 @@ spdk_bdev_get_io(struct spdk_bdev_channel *channel)
 void
 spdk_bdev_free_io(struct spdk_bdev_io *bdev_io)
 {
-	struct spdk_bdev_mgmt_channel *ch = bdev_io->internal.ch->shared_resource->mgmt_ch;
+	struct spdk_bdev_mgmt_channel *ch;
 
 	assert(bdev_io != NULL);
 	assert(bdev_io->internal.status != SPDK_BDEV_IO_STATUS_PENDING);
+
+	ch = bdev_io->internal.ch->shared_resource->mgmt_ch;
 
 	if (bdev_io->internal.buf != NULL) {
 		spdk_bdev_io_put_buf(bdev_io);
@@ -1784,6 +1798,11 @@ spdk_bdev_io_type_supported(struct spdk_bdev *bdev, enum spdk_bdev_io_type io_ty
 		case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
 			/* The bdev layer will emulate write zeroes as long as write is supported. */
 			supported = _spdk_bdev_io_type_supported(bdev, SPDK_BDEV_IO_TYPE_WRITE);
+			break;
+		case SPDK_BDEV_IO_TYPE_ZCOPY:
+			/* Zero copy can be emulated with regular read and write */
+			supported = _spdk_bdev_io_type_supported(bdev, SPDK_BDEV_IO_TYPE_READ) &&
+				    _spdk_bdev_io_type_supported(bdev, SPDK_BDEV_IO_TYPE_WRITE);
 			break;
 		default:
 			break;
@@ -2735,6 +2754,121 @@ spdk_bdev_writev_blocks(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 	spdk_bdev_io_init(bdev_io, bdev, cb_arg, cb);
 
 	spdk_bdev_io_submit(bdev_io);
+	return 0;
+}
+
+static void
+bdev_zcopy_get_buf(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io, bool success)
+{
+	if (!success) {
+		/* Don't use spdk_bdev_io_complete here - this bdev_io was never actually submitted. */
+		bdev_io->internal.status = SPDK_BDEV_IO_STATUS_NOMEM;
+		bdev_io->internal.cb(bdev_io, success, bdev_io->internal.caller_ctx);
+		return;
+	}
+
+	if (bdev_io->u.bdev.zcopy.populate) {
+		/* Read the real data into the buffer */
+		bdev_io->type = SPDK_BDEV_IO_TYPE_READ;
+		bdev_io->internal.status = SPDK_BDEV_IO_STATUS_PENDING;
+		spdk_bdev_io_submit(bdev_io);
+		return;
+	}
+
+	/* Don't use spdk_bdev_io_complete here - this bdev_io was never actually submitted. */
+	bdev_io->internal.status = SPDK_BDEV_IO_STATUS_SUCCESS;
+	bdev_io->internal.cb(bdev_io, success, bdev_io->internal.caller_ctx);
+}
+
+int
+spdk_bdev_zcopy_start(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+		      uint64_t offset_blocks, uint64_t num_blocks,
+		      bool populate,
+		      spdk_bdev_io_completion_cb cb, void *cb_arg)
+{
+	struct spdk_bdev *bdev = desc->bdev;
+	struct spdk_bdev_io *bdev_io;
+	struct spdk_bdev_channel *channel = spdk_io_channel_get_ctx(ch);
+
+	if (!desc->write) {
+		return -EBADF;
+	}
+
+	if (!spdk_bdev_io_valid_blocks(bdev, offset_blocks, num_blocks)) {
+		return -EINVAL;
+	}
+
+	if (!spdk_bdev_io_type_supported(bdev, SPDK_BDEV_IO_TYPE_ZCOPY)) {
+		return -ENOTSUP;
+	}
+
+	bdev_io = spdk_bdev_get_io(channel);
+	if (!bdev_io) {
+		return -ENOMEM;
+	}
+
+	bdev_io->internal.ch = channel;
+	bdev_io->internal.desc = desc;
+	bdev_io->type = SPDK_BDEV_IO_TYPE_ZCOPY;
+	bdev_io->u.bdev.num_blocks = num_blocks;
+	bdev_io->u.bdev.offset_blocks = offset_blocks;
+	bdev_io->u.bdev.iovs = NULL;
+	bdev_io->u.bdev.iovcnt = 0;
+	bdev_io->u.bdev.zcopy.populate = populate ? 1 : 0;
+	bdev_io->u.bdev.zcopy.commit = 0;
+	bdev_io->u.bdev.zcopy.start = 1;
+	spdk_bdev_io_init(bdev_io, bdev, cb_arg, cb);
+
+	if (_spdk_bdev_io_type_supported(bdev, SPDK_BDEV_IO_TYPE_ZCOPY)) {
+		spdk_bdev_io_submit(bdev_io);
+	} else {
+		/* Emulate zcopy by allocating a buffer */
+		spdk_bdev_io_get_buf(bdev_io, bdev_zcopy_get_buf,
+				     bdev_io->u.bdev.num_blocks * bdev->blocklen);
+	}
+
+	return 0;
+}
+
+int
+spdk_bdev_zcopy_end(struct spdk_bdev_io *bdev_io, bool commit,
+		    spdk_bdev_io_completion_cb cb, void *cb_arg)
+{
+	struct spdk_bdev *bdev = bdev_io->bdev;
+
+	if (bdev_io->type == SPDK_BDEV_IO_TYPE_READ) {
+		/* This can happen if the zcopy was emulated in start */
+		if (bdev_io->u.bdev.zcopy.start != 1) {
+			return -EINVAL;
+		}
+		bdev_io->type = SPDK_BDEV_IO_TYPE_ZCOPY;
+	}
+
+	if (bdev_io->type != SPDK_BDEV_IO_TYPE_ZCOPY) {
+		return -EINVAL;
+	}
+
+	bdev_io->u.bdev.zcopy.commit = commit ? 1 : 0;
+	bdev_io->u.bdev.zcopy.start = 0;
+	bdev_io->internal.caller_ctx = cb_arg;
+	bdev_io->internal.cb = cb;
+	bdev_io->internal.status = SPDK_BDEV_IO_STATUS_PENDING;
+
+	if (_spdk_bdev_io_type_supported(bdev, SPDK_BDEV_IO_TYPE_ZCOPY)) {
+		spdk_bdev_io_submit(bdev_io);
+		return 0;
+	}
+
+	if (!bdev_io->u.bdev.zcopy.commit) {
+		/* Don't use spdk_bdev_io_complete here - this bdev_io was never actually submitted. */
+		bdev_io->internal.status = SPDK_BDEV_IO_STATUS_SUCCESS;
+		bdev_io->internal.cb(bdev_io, true, bdev_io->internal.caller_ctx);
+		return 0;
+	}
+
+	bdev_io->type = SPDK_BDEV_IO_TYPE_WRITE;
+	spdk_bdev_io_submit(bdev_io);
+
 	return 0;
 }
 
@@ -3721,6 +3855,10 @@ spdk_bdev_start(struct spdk_bdev *bdev)
 	}
 
 	if (bdev->internal.claim_module) {
+		if (bdev->internal.claim_module->examine_disk) {
+			bdev->internal.claim_module->internal.action_in_progress++;
+			bdev->internal.claim_module->examine_disk(bdev);
+		}
 		return;
 	}
 
@@ -3741,21 +3879,15 @@ spdk_bdev_register(struct spdk_bdev *bdev)
 		spdk_bdev_start(bdev);
 	}
 
+	spdk_notify_send("bdev_register", spdk_bdev_get_name(bdev));
 	return rc;
 }
 
 int
 spdk_vbdev_register(struct spdk_bdev *vbdev, struct spdk_bdev **base_bdevs, int base_bdev_count)
 {
-	int rc;
-
-	rc = spdk_bdev_init(vbdev);
-	if (rc) {
-		return rc;
-	}
-
-	spdk_bdev_start(vbdev);
-	return 0;
+	SPDK_ERRLOG("This function is deprecated.  Use spdk_bdev_register() instead.\n");
+	return spdk_bdev_register(vbdev);
 }
 
 void
@@ -3789,9 +3921,10 @@ spdk_bdev_unregister_unsafe(struct spdk_bdev *bdev)
 	struct spdk_bdev_desc	*desc, *tmp;
 	int			rc = 0;
 
+	/* Notify each descriptor about hotremoval */
 	TAILQ_FOREACH_SAFE(desc, &bdev->internal.open_descs, link, tmp) {
+		rc = -EBUSY;
 		if (desc->remove_cb) {
-			rc = -EBUSY;
 			/*
 			 * Defer invocation of the remove_cb to a separate message that will
 			 *  run later on its thread.  This ensures this context unwinds and
@@ -3806,9 +3939,11 @@ spdk_bdev_unregister_unsafe(struct spdk_bdev *bdev)
 		}
 	}
 
+	/* If there are no descriptors, proceed removing the bdev */
 	if (rc == 0) {
 		TAILQ_REMOVE(&g_bdev_mgr.bdevs, bdev, internal.link);
 		SPDK_DEBUGLOG(SPDK_LOG_BDEV, "Removing bdev %s from list done\n", bdev->name);
+		spdk_notify_send("bdev_unregister", spdk_bdev_get_name(bdev));
 	}
 
 	return rc;
@@ -3926,7 +4061,10 @@ spdk_bdev_close(struct spdk_bdev_desc *desc)
 	SPDK_DEBUGLOG(SPDK_LOG_BDEV, "Closing descriptor %p for bdev %s on thread %p\n", desc, bdev->name,
 		      spdk_get_thread());
 
-	assert(desc->thread == spdk_get_thread());
+	if (desc->thread != spdk_get_thread()) {
+		SPDK_ERRLOG("Descriptor %p for bdev %s closed on wrong thread (%p, expected %p)\n",
+			    desc, bdev->name, spdk_get_thread(), desc->thread);
+	}
 
 	pthread_mutex_lock(&bdev->internal.mutex);
 
@@ -4008,10 +4146,8 @@ spdk_bdev_io_get_iovec(struct spdk_bdev_io *bdev_io, struct iovec **iovp, int *i
 
 	switch (bdev_io->type) {
 	case SPDK_BDEV_IO_TYPE_READ:
-		iovs = bdev_io->u.bdev.iovs;
-		iovcnt = bdev_io->u.bdev.iovcnt;
-		break;
 	case SPDK_BDEV_IO_TYPE_WRITE:
+	case SPDK_BDEV_IO_TYPE_ZCOPY:
 		iovs = bdev_io->u.bdev.iovs;
 		iovcnt = bdev_io->u.bdev.iovcnt;
 		break;

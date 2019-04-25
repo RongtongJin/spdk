@@ -125,7 +125,7 @@ extern pid_t g_spdk_nvme_pid;
 
 #define NVME_MAX_ASYNC_EVENTS	(8)
 
-#define NVME_MAX_TIMEOUT_PERIOD		(120)
+#define NVME_MAX_ADMIN_TIMEOUT_IN_SECS	(30)
 
 /* Maximum log page size to fetch for AERs. */
 #define NVME_MAX_AER_LOG_SIZE		(4096)
@@ -324,14 +324,7 @@ struct nvme_async_event_request {
 };
 
 struct spdk_nvme_qpair {
-	STAILQ_HEAD(, nvme_request)	free_req;
-	STAILQ_HEAD(, nvme_request)	queued_req;
-	/** Commands opcode in this list will return error */
-	TAILQ_HEAD(, nvme_error_cmd)	err_cmd_head;
-	/** Requests in this list will return error */
-	STAILQ_HEAD(, nvme_request)	err_req_head;
-
-	enum spdk_nvme_transport_type	trtype;
+	struct spdk_nvme_ctrlr		*ctrlr;
 
 	uint16_t			id;
 
@@ -351,7 +344,15 @@ struct spdk_nvme_qpair {
 	 */
 	uint8_t				no_deletion_notification_needed: 1;
 
-	struct spdk_nvme_ctrlr		*ctrlr;
+	enum spdk_nvme_transport_type	trtype;
+
+	STAILQ_HEAD(, nvme_request)	free_req;
+	STAILQ_HEAD(, nvme_request)	queued_req;
+
+	/** Commands opcode in this list will return error */
+	TAILQ_HEAD(, nvme_error_cmd)	err_cmd_head;
+	/** Requests in this list will return error */
+	STAILQ_HEAD(, nvme_request)	err_req_head;
 
 	/* List entry for spdk_nvme_ctrlr::active_io_qpairs */
 	TAILQ_ENTRY(spdk_nvme_qpair)	tailq;
@@ -907,7 +908,8 @@ struct nvme_request *nvme_allocate_request_user_copy(struct spdk_nvme_qpair *qpa
 		spdk_nvme_cmd_cb cb_fn, void *cb_arg, bool host_to_controller);
 
 static inline void
-nvme_complete_request(struct nvme_request *req, struct spdk_nvme_cpl *cpl)
+nvme_complete_request(spdk_nvme_cmd_cb cb_fn, void *cb_arg,
+		      struct nvme_request *req, struct spdk_nvme_cpl *cpl)
 {
 	struct spdk_nvme_qpair          *qpair = req->qpair;
 	struct spdk_nvme_cpl            err_cpl;
@@ -937,8 +939,8 @@ nvme_complete_request(struct nvme_request *req, struct spdk_nvme_cpl *cpl)
 		}
 	}
 
-	if (req->cb_fn) {
-		req->cb_fn(req->cb_arg, cpl);
+	if (cb_fn) {
+		cb_fn(cb_arg, cpl);
 	}
 }
 
