@@ -175,7 +175,7 @@ int main(int argc, char **argv)
 	}
 
 	spdk_app_opts_init(opts);
-	opts->name = "spdk_mkfs";
+	opts->name = "hello_blobf";
 	opts->config_file = argv[1];
 	// opts->reactor_mask = "0x01";
 	opts->shutdown_cb = NULL;
@@ -213,7 +213,7 @@ int main(int argc, char **argv)
 		spdk_file_write(file,g_sync_args.channel,writeword,0,strlen(writeword));
 		spdk_file_sync(file,g_sync_args.channel);
 		
-		printf("file size=%ld\n",spdk_file_get_length(file));
+		
 		int filesize=spdk_file_get_length(file);
 		char * readword=malloc(20);
 		spdk_file_read(file,g_sync_args.channel,readword,0,filesize);
