@@ -46,7 +46,7 @@ struct spdk_bs_dev *g_bs_dev;
 const char *g_bdev_name;
 struct spdk_filesystem *g_fs = NULL;
 struct sync_args {
-	struct spdk_io_channel *channel;
+	struct spdk_fs_thread_ctx *channel;
 };
 pthread_t mSpdkTid;
 volatile bool g_spdk_ready = false;
@@ -95,12 +95,16 @@ static void SpdkInitializeThread(void)
 	struct spdk_thread *thread;
 
 	if (g_fs != NULL) {
-		thread = spdk_thread_create("spdk_blobfs");
-
+		thread = spdk_thread_create("spdk_rocksdb", NULL);
 		spdk_set_thread(thread);
+		g_sync_args.channel = spdk_fs_alloc_thread_ctx(g_fs);
+	}
+}
 
-		g_sync_args.channel = spdk_fs_alloc_io_channel_sync(g_fs);
-	
+static void SpdkFinalizeThread(void)
+{
+	if (g_sync_args.channel) {
+		spdk_fs_free_thread_ctx(g_sync_args.channel);
 	}
 }
 
@@ -114,8 +118,7 @@ static void fs_load_cb(__attribute__((unused)) void *ctx,
 	g_spdk_ready = true;
 }
 
-static void spdk_blobfs_run(__attribute__((unused)) void *arg1,
-		 __attribute__((unused)) void *arg2)
+static void spdk_blobfs_run(__attribute__((unused)) void *arg1)
 {
 	struct spdk_bdev *bdev;
 
@@ -220,6 +223,8 @@ int main(int argc, char **argv)
 
 		free(readword);
 	}
+
+	SpdkFinalizeThread();
 	shutdown_cb(g_fs,NULL);
 	return rc;
 }
