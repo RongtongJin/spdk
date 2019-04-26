@@ -44,9 +44,13 @@
 #include <fcntl.h>
 #include <time.h>
 
-#define WRITE_TIMES_PER_THREAD 1000
-#define WRITE_THREAD_NUM 8
-#define READ_THREAD_NUM 8
+#define WRITE_TIMES_PER_THREAD 80000
+#define WRITE_THREAD_NUM 1
+#define RAN_READ_THREAD_NUM 2
+#define SEQ_READ_THREAD_NUM 2
+#define RANDOM_READ_TIMES 20000
+#define CACHE_SIZE 1024
+#define MSG_SIZE 51
 
 struct spdk_bs_dev *g_bs_dev;
 const char *g_bdev_name;
@@ -62,15 +66,27 @@ pthread_mutex_t lock;
 uint64_t writePos=0;
 uint32_t threadId=0;
 
-struct spdk_file *file;
-
 __thread struct sync_args g_sync_args;
 
 uint32_t spdk_env_get_first_core(void);
 
-char * msgContent="12345678901234567890123456789012345678901234567890\n";
+char * msgContent;
 
+const char * fileName="benchmark-test";
 
+static char *randstr(char *pointer, int n)
+{
+    int i,randnum;
+    char str_array[63] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    for (i = 0; i < n; i++)
+    {
+        randnum = rand()%62;                    
+        *pointer = str_array[randnum];          
+        pointer++;
+    }
+    *pointer = '\0';                            
+    return (pointer - n);                       
+}
 
 static void __call_fn(void *arg1, void *arg2)
 {
@@ -111,7 +127,7 @@ static void SpdkInitializeThread(void)
 	if (g_fs != NULL) {
 		pthread_mutex_lock(&lock);
 		char threadName[10]={0};
-		sprintf(threadName,"thread-%d",++threadId);
+		sprintf(threadName,"thread-%d",threadId++);
 		thread = spdk_thread_create(threadName, NULL);
 		spdk_set_thread(thread);
 		g_sync_args.channel = spdk_fs_alloc_thread_ctx(g_fs);
@@ -169,20 +185,82 @@ static void * initialize_spdk(void *arg)
 		free(opts);
 	}
 	pthread_exit(NULL);
-
 }
 
-static void* write_work(void *arg){
-	int msgLength=strlen(msgContent);
+static void* write_work(void *args){
 	SpdkInitializeThread();
+	struct spdk_file *file;
+	int err=spdk_fs_open_file(g_fs,g_sync_args.channel,fileName,SPDK_BLOBFS_OPEN_CREATE,&file);
+    if (err != 0) {
+        SPDK_ERRLOG("open file on filesystem failed");
+		exit(0);
+    }
+	printf("%s wirte start\n",spdk_thread_get_name(spdk_get_thread()));
 	for(int i=0;i<WRITE_TIMES_PER_THREAD;i++){
 		pthread_mutex_lock(&lock);
-		spdk_file_write(file,g_sync_args.channel,msgContent,writePos,msgLength);
+		spdk_file_write(file,g_sync_args.channel,msgContent,writePos,MSG_SIZE);
         spdk_file_sync(file,g_sync_args.channel);
-    	writePos+=msgLength;
-		printf("%s wirte, writePos=%ld\n",spdk_thread_get_name(spdk_get_thread()),writePos);
+    	writePos+=MSG_SIZE;
    		pthread_mutex_unlock(&lock);
 	}
+	printf("%s wirte done, writePos=%ld\n",spdk_thread_get_name(spdk_get_thread()),writePos);
+	spdk_file_close(file,g_sync_args.channel);
+	return NULL;
+}
+
+static void* random_read_work(void *args){
+	SpdkInitializeThread();
+	struct spdk_file *file;
+	int err=spdk_fs_open_file(g_fs,g_sync_args.channel,fileName,SPDK_BLOBFS_OPEN_CREATE,&file);
+    if (err != 0) {
+        SPDK_ERRLOG("open file on filesystem failed");
+		exit(0);
+    }
+	int readPos=0;
+	uint64_t fileLength=spdk_file_get_length(file);
+	char * line=(char *)malloc(MSG_SIZE);
+	int readSize=0;
+	int i=0;
+	printf("%s random read start\n",spdk_thread_get_name(spdk_get_thread()));
+	for(i=0;i<RANDOM_READ_TIMES;i++){
+		readPos=(rand()%fileLength)-MSG_SIZE;
+		if(readPos<0)
+			readPos=0;
+		readSize=spdk_file_read(file,g_sync_args.channel,line,readPos,MSG_SIZE);
+		if(readSize<0){
+			SPDK_NOTICELOG("random read size < 0\n");
+			break;
+		}
+	}
+	if(i==RANDOM_READ_TIMES)
+		printf("%s random read done\n",spdk_thread_get_name(spdk_get_thread()));
+	spdk_file_close(file,g_sync_args.channel);
+	return NULL;
+}
+
+static void* seq_read_work(void *args){
+	SpdkInitializeThread();
+	struct spdk_file *file;
+	int err=spdk_fs_open_file(g_fs,g_sync_args.channel,fileName,SPDK_BLOBFS_OPEN_CREATE,&file);
+    if (err != 0) {
+        SPDK_ERRLOG("open file on filesystem failed");
+		exit(0);
+    }
+	char * line=(char *)malloc(MSG_SIZE+1);
+	uint64_t readPos=0;
+	uint64_t fileLength=spdk_file_get_length(file);
+	int readSize=0;
+	printf("%s sequential read start\n",spdk_thread_get_name(spdk_get_thread()));
+	while(readPos<fileLength){
+		readSize=spdk_file_read(file,g_sync_args.channel,line,readPos,MSG_SIZE);	
+		if(readSize<0){
+			SPDK_NOTICELOG("sequential read size < 0\n");
+			break;
+		}
+		readPos+=MSG_SIZE;
+	}
+	printf("%s sequential read done, readPos=%ld\n",spdk_thread_get_name(spdk_get_thread()),readPos);
+	spdk_file_close(file,g_sync_args.channel);
 	return NULL;
 }
 
@@ -197,12 +275,12 @@ int main(int argc, char **argv)
 	}
 
 	spdk_app_opts_init(opts);
-	opts->name = "spdk_mkfs";
+	opts->name = "blobfs-benchmark";
 	opts->config_file = argv[1];
 	// opts->reactor_mask = "0x01";
 	opts->shutdown_cb = NULL;
 
-	spdk_fs_set_cache_size(512);
+	spdk_fs_set_cache_size(CACHE_SIZE);
 	g_bdev_name = argv[2];
 	
 	pthread_create(&mSpdkTid, NULL, &initialize_spdk, opts);
@@ -213,35 +291,34 @@ int main(int argc, char **argv)
 		SPDK_ERRLOG("spdk_app_start() unable to run");
 	}
 
-	int err=-1;
-	
 	SpdkInitializeThread();
 	
 	if(!g_fs){
 		SPDK_ERRLOG("g_fs is NULL\n");
         exit(0);
 	}
+
 	if(!g_sync_args.channel){
 		SPDK_ERRLOG("g_sync_args.channel is NULL\n");
         exit(0);
 	}
-	int msgLength=strlen(msgContent);
 
-	const char * fileName="writetest";
+	printf("Generate a msgContent of random length\n");
 
-	err=spdk_fs_delete_file(g_fs,g_sync_args.channel,fileName);
+	msgContent=(char *)malloc(MSG_SIZE);
 
-    err=spdk_fs_open_file(g_fs,g_sync_args.channel,fileName,SPDK_BLOBFS_OPEN_CREATE,&file);
+	msgContent=randstr(msgContent,MSG_SIZE);
 
-    if (err != 0) {
-        SPDK_ERRLOG("open file on filesystem failed");
-		exit(0);
-    }
+	printf("msgContent=%s\n",msgContent);
+
+	/* if file exist, delete it*/
+	struct spdk_file_stat stat;
+	if(!spdk_fs_file_stat(g_fs,g_sync_args.channel,fileName,&stat))
+		spdk_fs_delete_file(g_fs,g_sync_args.channel,fileName);
 
 	pthread_mutex_init(&lock,NULL);
 
 	/*wirte*/
-    
     pthread_t *write_threads = (pthread_t *)malloc(sizeof(pthread_t)*WRITE_THREAD_NUM);
     if (write_threads == NULL)
     {
@@ -250,21 +327,73 @@ int main(int argc, char **argv)
     }
     memset(write_threads, 0, sizeof(pthread_t)*WRITE_THREAD_NUM);
 	
-	long writeStart = clock();
+	long write_start = clock();
     for(int i=0;i<WRITE_THREAD_NUM;i++){
 		pthread_create(&write_threads[i],NULL,&write_work,NULL);
 	}
 	for(int i=0;i<WRITE_THREAD_NUM;i++){
 		pthread_join(write_threads[i],NULL);
 	}
-    long writeEnd = clock();
-	printf("write done，cost time = %ld\n",writeEnd-writeStart);
+    long write_end = clock();
+	printf("Write done， write threads num = %d , cacheSize = %d, msgSize = %d, msgTotalNum = %d, cost time = %ld\n", 
+	                      WRITE_THREAD_NUM, CACHE_SIZE, MSG_SIZE, WRITE_THREAD_NUM * WRITE_TIMES_PER_THREAD, write_end-write_start);
 	free(write_threads);
 
+	/*sequential read*/
+	pthread_t *seq_read_threads = (pthread_t *)malloc(sizeof(pthread_t)*SEQ_READ_THREAD_NUM);
+    if (seq_read_threads == NULL)
+    {
+        SPDK_ERRLOG("malloc threads false;\n");
+		exit(0);
+    }
+    memset(seq_read_threads, 0, sizeof(pthread_t)*SEQ_READ_THREAD_NUM);
+	
+	long seq_read_start = clock();
+    for(int i=0;i<SEQ_READ_THREAD_NUM;i++){
+		pthread_create(&seq_read_threads[i],NULL,&seq_read_work,NULL);
+	}
+	for(int i=0;i<SEQ_READ_THREAD_NUM;i++){
+		pthread_join(seq_read_threads[i],NULL);
+	}
+    long seq_read_end = clock();
+
+	printf("Sequential read done， seq read threads num = %d , cacheSize = %d, msgSize = %d, msgTotalNum = %d, cost time = %ld\n", 
+	                      SEQ_READ_THREAD_NUM, CACHE_SIZE, MSG_SIZE, SEQ_READ_THREAD_NUM * WRITE_THREAD_NUM * WRITE_TIMES_PER_THREAD, seq_read_end - seq_read_start);
+	free(seq_read_threads);
+
+	/*random read*/
+	pthread_t *ran_read_threads = (pthread_t *)malloc(sizeof(pthread_t)*RAN_READ_THREAD_NUM);
+    if (ran_read_threads == NULL)
+    {
+        SPDK_ERRLOG("malloc threads false;\n");
+		exit(0);
+    }
+    memset(ran_read_threads, 0, sizeof(pthread_t)*RAN_READ_THREAD_NUM);
+	
+	long ran_read_start = clock();
+    for(int i=0;i<RAN_READ_THREAD_NUM;i++){
+		pthread_create(&ran_read_threads[i],NULL,&random_read_work,NULL);
+	}
+	for(int i=0;i<RAN_READ_THREAD_NUM;i++){
+		pthread_join(ran_read_threads[i],NULL);
+	}
+    long ran_read_end = clock();
+
+	printf("random read done， random read threads num = %d , random read time per thread = %d, msgSize = %d, msgTotalNum = %d, cost time = %ld\n", 
+	                      RAN_READ_THREAD_NUM, RANDOM_READ_TIMES, MSG_SIZE, RAN_READ_THREAD_NUM * RANDOM_READ_TIMES, ran_read_end - ran_read_start);
+	free(ran_read_threads);
+
+
 	/*write to local filesystem for check*/
-	// char * line=(char *)malloc(msgLength);
+	// struct spdk_file *file;
+	// int err=spdk_fs_open_file(g_fs,g_sync_args.channel,fileName,SPDK_BLOBFS_OPEN_CREATE,&file);
+    // if (err != 0) {
+    //     SPDK_ERRLOG("open file on filesystem failed");
+	// 	exit(0);
+    // }
+	// char * line=(char *)malloc(MSG_SIZE);
 	// uint64_t readpos=0;
-	// u_int64_t fileLength=spdk_file_get_length(file);
+	// uint64_t fileLength=spdk_file_get_length(file);
 	// printf("file size=%ld\n",fileLength);
 	// int writeSize=0;
 	// int fd=open("checkfile",O_CREAT|O_RDWR,0666);
@@ -272,19 +401,19 @@ int main(int argc, char **argv)
 	// 	SPDK_ERRLOG("fd < 0");
 	// }
 	// while(readpos<fileLength){
-	// 	spdk_file_read(file,g_sync_args.channel,line,readpos,msgLength);	
-	// 	writeSize=write(fd,line,msgLength);
+	// 	spdk_file_read(file,g_sync_args.channel,line,readpos,MSG_SIZE);	
+	// 	writeSize=write(fd,line,MSG_SIZE);
 	// 	if(writeSize<0){
 	// 		SPDK_NOTICELOG("write checkfile size <0\n");
 	// 		break;
 	// 	}
-	// 	readpos+=msgLength;
-	// 	printf("readpos=%ld\n",readpos);
+	// 	readpos+=MSG_SIZE;
 	// }
 	// printf("write check file done\n");
 	// free(line);
+	// spdk_file_close(file,g_sync_args.channel);
 	
-	spdk_file_close(file,g_sync_args.channel);
+	/*clean up*/
 	SpdkFinalizeThread();
 	shutdown_cb(g_fs,NULL);
 	return rc;
