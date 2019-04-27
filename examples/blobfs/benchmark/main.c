@@ -44,13 +44,13 @@
 #include <fcntl.h>
 #include <time.h>
 
-#define WRITE_TIMES_PER_THREAD 80000
-#define WRITE_THREAD_NUM 1
+#define WRITE_TIMES_PER_THREAD 400000
+#define WRITE_THREAD_NUM 2
 #define RAN_READ_THREAD_NUM 2
 #define SEQ_READ_THREAD_NUM 2
-#define RANDOM_READ_TIMES 20000
+#define RANDOM_READ_TIMES 400000
 #define CACHE_SIZE 1024
-#define MSG_SIZE 51
+#define MSG_SIZE 50
 
 struct spdk_bs_dev *g_bs_dev;
 const char *g_bdev_name;
@@ -126,7 +126,7 @@ static void SpdkInitializeThread(void)
 
 	if (g_fs != NULL) {
 		pthread_mutex_lock(&lock);
-		char threadName[10]={0};
+		char threadName[20]={0};
 		sprintf(threadName,"thread-%d",threadId++);
 		thread = spdk_thread_create(threadName, NULL);
 		spdk_set_thread(thread);
@@ -205,6 +205,7 @@ static void* write_work(void *args){
 	}
 	printf("%s wirte done, writePos=%ld\n",spdk_thread_get_name(spdk_get_thread()),writePos);
 	spdk_file_close(file,g_sync_args.channel);
+	SpdkFinalizeThread();
 	return NULL;
 }
 
@@ -235,6 +236,7 @@ static void* random_read_work(void *args){
 	if(i==RANDOM_READ_TIMES)
 		printf("%s random read done\n",spdk_thread_get_name(spdk_get_thread()));
 	spdk_file_close(file,g_sync_args.channel);
+	SpdkFinalizeThread();
 	return NULL;
 }
 
@@ -257,10 +259,44 @@ static void* seq_read_work(void *args){
 			SPDK_NOTICELOG("sequential read size < 0\n");
 			break;
 		}
+		if(strcmp(line,msgContent)!=0){
+			SPDK_ERRLOG("check error!!!\n");
+			break;
+		}
 		readPos+=MSG_SIZE;
 	}
 	printf("%s sequential read done, readPos=%ld\n",spdk_thread_get_name(spdk_get_thread()),readPos);
 	spdk_file_close(file,g_sync_args.channel);
+	// struct spdk_file *file;
+	// int err=spdk_fs_open_file(g_fs,g_sync_args.channel,fileName,SPDK_BLOBFS_OPEN_CREATE,&file);
+    // if (err != 0) {
+    //     SPDK_ERRLOG("open file on filesystem failed");
+	// 	exit(0);
+    // }
+	// char * line=(char *)malloc(MSG_SIZE);
+	// uint64_t readpos=0;
+	// uint64_t fileLength=spdk_file_get_length(file);
+	// printf("file size=%ld\n",fileLength);
+	// int writeSize=0;
+	// char fileName[50]={0};
+	// sprintf(fileName,"checkfile-%s",spdk_thread_get_name(spdk_get_thread()));
+	// int fd=open(fileName,O_CREAT|O_RDWR,0666);
+	// if(fd<0){
+	// 	SPDK_ERRLOG("fd < 0");
+	// }
+	// while(readpos<fileLength){
+	// 	spdk_file_read(file,g_sync_args.channel,line,readpos,MSG_SIZE);	
+	// 	writeSize=write(fd,line,MSG_SIZE);
+	// 	if(writeSize<0){
+	// 		SPDK_NOTICELOG("write checkfile size <0\n");
+	// 		break;
+	// 	}
+	// 	readpos+=MSG_SIZE;
+	// }
+	// printf("write checkfile done\n");
+	// free(line);
+	// spdk_file_close(file,g_sync_args.channel);
+	SpdkFinalizeThread();
 	return NULL;
 }
 
@@ -336,7 +372,7 @@ int main(int argc, char **argv)
 	}
     long write_end = clock();
 	printf("Write done， write threads num = %d , cacheSize = %d, msgSize = %d, msgTotalNum = %d, cost time = %ld\n", 
-	                      WRITE_THREAD_NUM, CACHE_SIZE, MSG_SIZE, WRITE_THREAD_NUM * WRITE_TIMES_PER_THREAD, write_end-write_start);
+	                    WRITE_THREAD_NUM, CACHE_SIZE, MSG_SIZE, WRITE_THREAD_NUM * WRITE_TIMES_PER_THREAD, write_end-write_start);
 	free(write_threads);
 
 	/*sequential read*/
@@ -357,8 +393,8 @@ int main(int argc, char **argv)
 	}
     long seq_read_end = clock();
 
-	printf("Sequential read done， seq read threads num = %d , cacheSize = %d, msgSize = %d, msgTotalNum = %d, cost time = %ld\n", 
-	                      SEQ_READ_THREAD_NUM, CACHE_SIZE, MSG_SIZE, SEQ_READ_THREAD_NUM * WRITE_THREAD_NUM * WRITE_TIMES_PER_THREAD, seq_read_end - seq_read_start);
+	printf("Sequential read done， seq read threads num = %d, cacheSize = %d, msgSize = %d, msgTotalNum = %d, cost time = %ld\n", 
+	                    SEQ_READ_THREAD_NUM, CACHE_SIZE, MSG_SIZE, SEQ_READ_THREAD_NUM * WRITE_THREAD_NUM * WRITE_TIMES_PER_THREAD, seq_read_end - seq_read_start);
 	free(seq_read_threads);
 
 	/*random read*/
@@ -379,8 +415,8 @@ int main(int argc, char **argv)
 	}
     long ran_read_end = clock();
 
-	printf("random read done， random read threads num = %d , random read time per thread = %d, msgSize = %d, msgTotalNum = %d, cost time = %ld\n", 
-	                      RAN_READ_THREAD_NUM, RANDOM_READ_TIMES, MSG_SIZE, RAN_READ_THREAD_NUM * RANDOM_READ_TIMES, ran_read_end - ran_read_start);
+	printf("random read done， random read threads num = %d, random read time per thread = %d, msgSize = %d, msgTotalNum = %d, cost time = %ld\n", 
+	                    RAN_READ_THREAD_NUM, RANDOM_READ_TIMES, MSG_SIZE, RAN_READ_THREAD_NUM * RANDOM_READ_TIMES, ran_read_end - ran_read_start);
 	free(ran_read_threads);
 
 
@@ -409,7 +445,7 @@ int main(int argc, char **argv)
 	// 	}
 	// 	readpos+=MSG_SIZE;
 	// }
-	// printf("write check file done\n");
+	// printf("write checkfile done\n");
 	// free(line);
 	// spdk_file_close(file,g_sync_args.channel);
 	

@@ -1,0 +1,7 @@
+Starting SPDK v19.04-pre / DPDK 19.02.0 initialization...
+[ DPDK EAL parameters: blobfs-benchmark --no-shconf -c 0x1 --log-level=lib.eal:6 --base-virtaddr=0x200000000000 --match-allocations --file-prefix=spdk_pid2618 ]
+EAL: No free hugepages reported in hugepages-1048576kB
+app.c: 627:spdk_app_start: *NOTICE*: Total cores available: 1
+reactor.c: 251:_spdk_reactor_run: *NOTICE*: Reactor started on core 0
+main.c: 333:main: *ERROR*: g_fs is NULL
+using bdev AIO0
