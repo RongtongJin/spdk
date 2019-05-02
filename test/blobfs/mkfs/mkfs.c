@@ -54,6 +54,9 @@ static void
 shutdown_cb(void *arg1, void *arg2)
 {
 	struct spdk_filesystem *fs = arg1;
+	if(fs==NULL){
+		printf("error\n");
+	}
 
 	printf("done.\n");
 	spdk_fs_unload(fs, stop_cb, NULL);
