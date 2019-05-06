@@ -237,26 +237,28 @@ spdk_trace_register_object(uint8_t type, char id_prefix)
 }
 
 void
-spdk_trace_register_description(const char *name, const char *short_name,
-				uint16_t tpoint_id, uint8_t owner_type,
+spdk_trace_register_description(const char *name, uint16_t tpoint_id, uint8_t owner_type,
 				uint8_t object_type, uint8_t new_object,
-				uint8_t arg1_is_ptr, const char *arg1_name)
+				uint8_t arg1_type, const char *arg1_name)
 {
 	struct spdk_trace_tpoint *tpoint;
 
 	assert(tpoint_id != 0);
 	assert(tpoint_id < SPDK_TRACE_MAX_TPOINT_ID);
 
+	if (strnlen(name, sizeof(tpoint->name)) == sizeof(tpoint->name)) {
+		SPDK_ERRLOG("name (%s) too long\n", name);
+	}
+
 	tpoint = &g_trace_flags->tpoint[tpoint_id];
 	assert(tpoint->tpoint_id == 0);
 
 	snprintf(tpoint->name, sizeof(tpoint->name), "%s", name);
-	snprintf(tpoint->short_name, sizeof(tpoint->short_name), "%s", short_name);
 	tpoint->tpoint_id = tpoint_id;
 	tpoint->object_type = object_type;
 	tpoint->owner_type = owner_type;
 	tpoint->new_object = new_object;
-	tpoint->arg1_is_ptr = arg1_is_ptr;
+	tpoint->arg1_type = arg1_type;
 	snprintf(tpoint->arg1_name, sizeof(tpoint->arg1_name), "%s", arg1_name);
 }
 

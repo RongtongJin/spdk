@@ -134,12 +134,12 @@ if __name__ == "__main__":
     def construct_compress_bdev(args):
         print(rpc.bdev.construct_compress_bdev(args.client,
                                                base_bdev_name=args.base_bdev_name,
-                                               name=args.name,
+                                               pm_path=args.pm_path,
                                                comp_pmd=args.comp_pmd))
     p = subparsers.add_parser('construct_compress_bdev',
                               help='Add a compress vbdev')
     p.add_argument('-b', '--base_bdev_name', help="Name of the base bdev")
-    p.add_argument('-c', '--name', help="Name of the compress vbdev")
+    p.add_argument('-p', '--pm_path', help="Path to persistent memory")
     p.add_argument('-d', '--comp_pmd', help="Name of the compression device driver")
     p.set_defaults(func=construct_compress_bdev)
 
@@ -1792,13 +1792,23 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
     p.add_argument('-n', '--max', help="""Maximum number of notifications to return in response""", type=int)
     p.set_defaults(func=get_notifications)
 
-    args = parser.parse_args()
-
-    with rpc.client.JSONRPCClient(args.server_addr, args.port, args.timeout, log_level=getattr(logging, args.verbose.upper())) as client:
+    def call_rpc_func(args):
         try:
-            args.client = client
             args.func(args)
         except JSONRPCException as ex:
             print("Exception:")
             print(ex.message)
             exit(1)
+
+    def execute_script(parser, client, fd):
+        for rpc_call in map(str.rstrip, fd):
+            args = parser.parse_args(rpc_call.split())
+            args.client = client
+            call_rpc_func(args)
+
+    args = parser.parse_args()
+    args.client = rpc.client.JSONRPCClient(args.server_addr, args.port, args.timeout, log_level=getattr(logging, args.verbose.upper()))
+    if hasattr(args, 'func'):
+        call_rpc_func(args)
+    else:
+        execute_script(parser, args.client, sys.stdin)

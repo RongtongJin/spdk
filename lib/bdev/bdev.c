@@ -58,10 +58,10 @@
 int __itt_init_ittlib(const char *, __itt_group_id);
 #endif
 
-#define SPDK_BDEV_IO_POOL_SIZE			(64 * 1024)
+#define SPDK_BDEV_IO_POOL_SIZE			(64 * 1024 - 1)
 #define SPDK_BDEV_IO_CACHE_SIZE			256
-#define BUF_SMALL_POOL_SIZE			8192
-#define BUF_LARGE_POOL_SIZE			1024
+#define BUF_SMALL_POOL_SIZE			8191
+#define BUF_LARGE_POOL_SIZE			1023
 #define NOMEM_THRESHOLD_COUNT			8
 #define ZERO_BUFFER_SIZE			0x100000
 
@@ -4674,8 +4674,8 @@ SPDK_TRACE_REGISTER_FN(bdev_trace, "bdev", TRACE_GROUP_BDEV)
 {
 	spdk_trace_register_owner(OWNER_BDEV, 'b');
 	spdk_trace_register_object(OBJECT_BDEV_IO, 'i');
-	spdk_trace_register_description("BDEV_IO_START", "", TRACE_BDEV_IO_START, OWNER_BDEV,
+	spdk_trace_register_description("BDEV_IO_START", TRACE_BDEV_IO_START, OWNER_BDEV,
 					OBJECT_BDEV_IO, 1, 0, "type:   ");
-	spdk_trace_register_description("BDEV_IO_DONE", "", TRACE_BDEV_IO_DONE, OWNER_BDEV,
+	spdk_trace_register_description("BDEV_IO_DONE", TRACE_BDEV_IO_DONE, OWNER_BDEV,
 					OBJECT_BDEV_IO, 0, 0, "");
 }

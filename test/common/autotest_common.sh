@@ -197,10 +197,6 @@ if [ ! -d "${DEPENDENCY_DIR}/nvme-cli" ]; then
 	export SPDK_TEST_NVME_CLI=0
 fi
 
-if [ $SPDK_TEST_FTL -eq 1 ]; then
-	config_params+=' --with-ftl'
-fi
-
 if [ $SPDK_TEST_ISAL -eq 0 ]; then
 	config_params+=' --without-isal'
 fi
@@ -673,6 +669,22 @@ function waitforblk_disconnect()
 	done
 
 	if lsblk -l -o NAME | grep -q -w $1; then
+		return 1
+	fi
+
+	return 0
+}
+
+function waitforfile()
+{
+	local i=0
+	while [ ! -f $1 ]; do
+		[ $i -lt 200 ] || break
+		i=$[$i+1]
+		sleep 0.1
+	done
+
+	if [ ! -f $1 ]; then
 		return 1
 	fi
 

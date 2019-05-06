@@ -58,11 +58,33 @@ uint32_t g_lcore = 0;
 std::string g_bdev_name;
 volatile bool g_spdk_ready = false;
 volatile bool g_spdk_start_failure = false;
-struct sync_args {
+
+static void SpdkInitializeThread(void);
+
+class SpdkThreadCtx
+{
+public:
 	struct spdk_fs_thread_ctx *channel;
+
+	SpdkThreadCtx(void) : channel(NULL)
+	{
+		SpdkInitializeThread();
+	}
+
+	~SpdkThreadCtx(void)
+	{
+		if (channel) {
+			spdk_fs_free_thread_ctx(channel);
+			channel = NULL;
+		}
+	}
+
+private:
+	SpdkThreadCtx(const SpdkThreadCtx &);
+	SpdkThreadCtx &operator=(const SpdkThreadCtx &);
 };
 
-__thread struct sync_args g_sync_args;
+thread_local SpdkThreadCtx g_sync_args;
 
 static void
 __call_fn(void *arg1, void *arg2)
@@ -510,7 +532,6 @@ public:
 		}
 		return Status::OK();
 	}
-	virtual void StartThread(void (*function)(void *arg), void *arg) override;
 	virtual Status LockFile(const std::string &fname, FileLock **lock) override
 	{
 		std::string name = sanitize_path(fname, mDirectory);
@@ -579,45 +600,21 @@ public:
 	}
 };
 
-void SpdkInitializeThread(void)
+/* The thread local constructor doesn't work for the main thread, since
+ * the filesystem hasn't been loaded yet.  So we break out this
+ * SpdkInitializeThread function, so that the main thread can explicitly
+ * call it after the filesystem has been loaded.
+ */
+static void SpdkInitializeThread(void)
 {
 	struct spdk_thread *thread;
 
+	assert(g_sync_args.channel == NULL);
 	if (g_fs != NULL) {
 		thread = spdk_thread_create("spdk_rocksdb", NULL);
 		spdk_set_thread(thread);
 		g_sync_args.channel = spdk_fs_alloc_thread_ctx(g_fs);
 	}
-}
-
-void SpdkFinalizeThread(void)
-{
-	if (g_sync_args.channel) {
-		spdk_fs_free_thread_ctx(g_sync_args.channel);
-	}
-}
-
-struct SpdkThreadState {
-	void (*user_function)(void *);
-	void *arg;
-};
-
-static void SpdkStartThreadWrapper(void *arg)
-{
-	SpdkThreadState *state = reinterpret_cast<SpdkThreadState *>(arg);
-
-	SpdkInitializeThread();
-	state->user_function(state->arg);
-	SpdkFinalizeThread();
-	delete state;
-}
-
-void SpdkEnv::StartThread(void (*function)(void *arg), void *arg)
-{
-	SpdkThreadState *state = new SpdkThreadState;
-	state->user_function = function;
-	state->arg = arg;
-	EnvWrapper::StartThread(SpdkStartThreadWrapper, state);
 }
 
 static void
@@ -739,7 +736,6 @@ SpdkEnv::~SpdkEnv()
 		}
 	}
 
-	SpdkFinalizeThread();
 	spdk_app_start_shutdown();
 	pthread_join(mSpdkTid, NULL);
 }

@@ -162,54 +162,52 @@ enum spdk_nvmf_rdma_request_state {
 SPDK_TRACE_REGISTER_FN(nvmf_trace, "nvmf_rdma", TRACE_GROUP_NVMF_RDMA)
 {
 	spdk_trace_register_object(OBJECT_NVMF_RDMA_IO, 'r');
-	spdk_trace_register_description("RDMA_REQ_NEW", "",
-					TRACE_RDMA_REQUEST_STATE_NEW,
+	spdk_trace_register_description("RDMA_REQ_NEW", TRACE_RDMA_REQUEST_STATE_NEW,
 					OWNER_NONE, OBJECT_NVMF_RDMA_IO, 1, 1, "cmid:   ");
-	spdk_trace_register_description("RDMA_REQ_NEED_BUFFER", "",
-					TRACE_RDMA_REQUEST_STATE_NEED_BUFFER,
+	spdk_trace_register_description("RDMA_REQ_NEED_BUFFER", TRACE_RDMA_REQUEST_STATE_NEED_BUFFER,
 					OWNER_NONE, OBJECT_NVMF_RDMA_IO, 0, 1, "cmid:   ");
-	spdk_trace_register_description("RDMA_REQ_TX_PENDING_C_TO_H", "",
+	spdk_trace_register_description("RDMA_REQ_TX_PENDING_C2H",
 					TRACE_RDMA_REQUEST_STATE_DATA_TRANSFER_TO_HOST_PENDING,
 					OWNER_NONE, OBJECT_NVMF_RDMA_IO, 0, 1, "cmid:   ");
-	spdk_trace_register_description("RDMA_REQ_TX_PENDING_H_TO_C", "",
+	spdk_trace_register_description("RDMA_REQ_TX_PENDING_H2C",
 					TRACE_RDMA_REQUEST_STATE_DATA_TRANSFER_TO_CONTROLLER_PENDING,
 					OWNER_NONE, OBJECT_NVMF_RDMA_IO, 0, 1, "cmid:   ");
-	spdk_trace_register_description("RDMA_REQ_TX_H_TO_C", "",
+	spdk_trace_register_description("RDMA_REQ_TX_H2C",
 					TRACE_RDMA_REQUEST_STATE_TRANSFERRING_HOST_TO_CONTROLLER,
 					OWNER_NONE, OBJECT_NVMF_RDMA_IO, 0, 1, "cmid:   ");
-	spdk_trace_register_description("RDMA_REQ_RDY_TO_EXECUTE", "",
+	spdk_trace_register_description("RDMA_REQ_RDY_TO_EXECUTE",
 					TRACE_RDMA_REQUEST_STATE_READY_TO_EXECUTE,
 					OWNER_NONE, OBJECT_NVMF_RDMA_IO, 0, 1, "cmid:   ");
-	spdk_trace_register_description("RDMA_REQ_EXECUTING", "",
+	spdk_trace_register_description("RDMA_REQ_EXECUTING",
 					TRACE_RDMA_REQUEST_STATE_EXECUTING,
 					OWNER_NONE, OBJECT_NVMF_RDMA_IO, 0, 1, "cmid:   ");
-	spdk_trace_register_description("RDMA_REQ_EXECUTED", "",
+	spdk_trace_register_description("RDMA_REQ_EXECUTED",
 					TRACE_RDMA_REQUEST_STATE_EXECUTED,
 					OWNER_NONE, OBJECT_NVMF_RDMA_IO, 0, 1, "cmid:   ");
-	spdk_trace_register_description("RDMA_REQ_RDY_TO_COMPLETE", "",
+	spdk_trace_register_description("RDMA_REQ_RDY_TO_COMPL",
 					TRACE_RDMA_REQUEST_STATE_READY_TO_COMPLETE,
 					OWNER_NONE, OBJECT_NVMF_RDMA_IO, 0, 1, "cmid:   ");
-	spdk_trace_register_description("RDMA_REQ_COMPLETING_CONTROLLER_TO_HOST", "",
+	spdk_trace_register_description("RDMA_REQ_COMPLETING_C2H",
 					TRACE_RDMA_REQUEST_STATE_TRANSFERRING_CONTROLLER_TO_HOST,
 					OWNER_NONE, OBJECT_NVMF_RDMA_IO, 0, 1, "cmid:   ");
-	spdk_trace_register_description("RDMA_REQ_COMPLETING_INCAPSULE", "",
+	spdk_trace_register_description("RDMA_REQ_COMPLETING",
 					TRACE_RDMA_REQUEST_STATE_COMPLETING,
 					OWNER_NONE, OBJECT_NVMF_RDMA_IO, 0, 1, "cmid:   ");
-	spdk_trace_register_description("RDMA_REQ_COMPLETED", "",
+	spdk_trace_register_description("RDMA_REQ_COMPLETED",
 					TRACE_RDMA_REQUEST_STATE_COMPLETED,
 					OWNER_NONE, OBJECT_NVMF_RDMA_IO, 0, 1, "cmid:   ");
 
-	spdk_trace_register_description("RDMA_QP_CREATE", "", TRACE_RDMA_QP_CREATE,
+	spdk_trace_register_description("RDMA_QP_CREATE", TRACE_RDMA_QP_CREATE,
 					OWNER_NONE, OBJECT_NONE, 0, 0, "");
-	spdk_trace_register_description("RDMA_IBV_ASYNC_EVENT", "", TRACE_RDMA_IBV_ASYNC_EVENT,
+	spdk_trace_register_description("RDMA_IBV_ASYNC_EVENT", TRACE_RDMA_IBV_ASYNC_EVENT,
 					OWNER_NONE, OBJECT_NONE, 0, 0, "type:   ");
-	spdk_trace_register_description("RDMA_CM_ASYNC_EVENT", "", TRACE_RDMA_CM_ASYNC_EVENT,
+	spdk_trace_register_description("RDMA_CM_ASYNC_EVENT", TRACE_RDMA_CM_ASYNC_EVENT,
 					OWNER_NONE, OBJECT_NONE, 0, 0, "type:   ");
-	spdk_trace_register_description("RDMA_QP_STATE_CHANGE", "", TRACE_RDMA_QP_STATE_CHANGE,
+	spdk_trace_register_description("RDMA_QP_STATE_CHANGE", TRACE_RDMA_QP_STATE_CHANGE,
 					OWNER_NONE, OBJECT_NONE, 0, 1, "state:  ");
-	spdk_trace_register_description("RDMA_QP_DISCONNECT", "", TRACE_RDMA_QP_DISCONNECT,
+	spdk_trace_register_description("RDMA_QP_DISCONNECT", TRACE_RDMA_QP_DISCONNECT,
 					OWNER_NONE, OBJECT_NONE, 0, 0, "");
-	spdk_trace_register_description("RDMA_QP_DESTROY", "", TRACE_RDMA_QP_DESTROY,
+	spdk_trace_register_description("RDMA_QP_DESTROY", TRACE_RDMA_QP_DESTROY,
 					OWNER_NONE, OBJECT_NONE, 0, 0, "");
 }
 
@@ -1076,7 +1074,6 @@ request_transfer_out(struct spdk_nvmf_request *req, int *data_posted)
 	if (rqpair->srq == NULL) {
 		rc = ibv_post_recv(rqpair->cm_id->qp, &rdma_req->recv->wr, &bad_recv_wr);
 	} else {
-		rdma_req->recv->qpair = NULL;
 		rc = ibv_post_srq_recv(rqpair->srq, &rdma_req->recv->wr, &bad_recv_wr);
 	}
 
@@ -2044,7 +2041,7 @@ spdk_nvmf_rdma_request_process(struct spdk_nvmf_rdma_transport *rtransport,
 #define SPDK_NVMF_RDMA_DEFAULT_IN_CAPSULE_DATA_SIZE 4096
 #define SPDK_NVMF_RDMA_DEFAULT_MAX_IO_SIZE 131072
 #define SPDK_NVMF_RDMA_MIN_IO_BUFFER_SIZE (SPDK_NVMF_RDMA_DEFAULT_MAX_IO_SIZE / SPDK_NVMF_MAX_SGL_ENTRIES)
-#define SPDK_NVMF_RDMA_DEFAULT_NUM_SHARED_BUFFERS 4096
+#define SPDK_NVMF_RDMA_DEFAULT_NUM_SHARED_BUFFERS 4095
 #define SPDK_NVMF_RDMA_DEFAULT_BUFFER_CACHE_SIZE 32
 
 static void
@@ -2777,12 +2774,10 @@ spdk_nvmf_process_ib_event(struct spdk_nvmf_rdma_device *device)
 		return;
 	}
 
-	SPDK_NOTICELOG("Async event: %s\n",
-		       ibv_event_type_str(event.event_type));
-
 	switch (event.event_type) {
 	case IBV_EVENT_QP_FATAL:
 		rqpair = event.element.qp->qp_context;
+		SPDK_ERRLOG("Fatal event received for rqpair %p\n", rqpair);
 		spdk_trace_record(TRACE_RDMA_IBV_ASYNC_EVENT, 0, 0,
 				  (uintptr_t)rqpair->cm_id, event.event_type);
 		spdk_nvmf_rdma_update_ibv_state(rqpair);
@@ -2793,6 +2788,7 @@ spdk_nvmf_process_ib_event(struct spdk_nvmf_rdma_device *device)
 		rqpair = event.element.qp->qp_context;
 		rqpair->last_wqe_reached = true;
 
+		SPDK_DEBUGLOG(SPDK_LOG_RDMA, "Last WQE reached event received for rqpair %p\n", rqpair);
 		/* This must be handled on the polling thread if it exists. Otherwise the timeout will catch it. */
 		if (rqpair->qpair.group) {
 			spdk_thread_send_msg(rqpair->qpair.group->thread, nvmf_rdma_destroy_drained_qpair, rqpair);
@@ -2808,6 +2804,7 @@ spdk_nvmf_process_ib_event(struct spdk_nvmf_rdma_device *device)
 		 * the operations that the below calls make all happen to be thread
 		 * safe. */
 		rqpair = event.element.qp->qp_context;
+		SPDK_DEBUGLOG(SPDK_LOG_RDMA, "Last sq drained event received for rqpair %p\n", rqpair);
 		spdk_trace_record(TRACE_RDMA_IBV_ASYNC_EVENT, 0, 0,
 				  (uintptr_t)rqpair->cm_id, event.event_type);
 		state = spdk_nvmf_rdma_update_ibv_state(rqpair);
@@ -2820,6 +2817,8 @@ spdk_nvmf_process_ib_event(struct spdk_nvmf_rdma_device *device)
 	case IBV_EVENT_COMM_EST:
 	case IBV_EVENT_PATH_MIG:
 	case IBV_EVENT_PATH_MIG_ERR:
+		SPDK_NOTICELOG("Async event: %s\n",
+			       ibv_event_type_str(event.event_type));
 		rqpair = event.element.qp->qp_context;
 		spdk_trace_record(TRACE_RDMA_IBV_ASYNC_EVENT, 0, 0,
 				  (uintptr_t)rqpair->cm_id, event.event_type);
@@ -2837,6 +2836,8 @@ spdk_nvmf_process_ib_event(struct spdk_nvmf_rdma_device *device)
 	case IBV_EVENT_CLIENT_REREGISTER:
 	case IBV_EVENT_GID_CHANGE:
 	default:
+		SPDK_NOTICELOG("Async event: %s\n",
+			       ibv_event_type_str(event.event_type));
 		spdk_trace_record(TRACE_RDMA_IBV_ASYNC_EVENT, 0, 0, 0, event.event_type);
 		break;
 	}
@@ -3231,9 +3232,9 @@ spdk_nvmf_rdma_poller_poll(struct spdk_nvmf_rdma_transport *rtransport,
 			assert(rdma_req->num_outstanding_data_wr == 0);
 			break;
 		case RDMA_WR_TYPE_RECV:
-			/* rdma_recv->qpair will be NULL if using an SRQ.  In that case we have to get the qpair from the wc. */
+			/* rdma_recv->qpair will be invalid if using an SRQ.  In that case we have to get the qpair from the wc. */
 			rdma_recv = SPDK_CONTAINEROF(rdma_wr, struct spdk_nvmf_rdma_recv, rdma_wr);
-			if (rdma_recv->qpair == NULL) {
+			if (rpoller->srq != NULL) {
 				rdma_recv->qpair = get_rdma_qpair_from_wc(rpoller, &wc[i]);
 			}
 			rqpair = rdma_recv->qpair;

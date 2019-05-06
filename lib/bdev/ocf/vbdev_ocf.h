@@ -83,7 +83,7 @@ struct vbdev_ocf_config {
 
 /* Types for management operations */
 typedef void (*vbdev_ocf_mngt_fn)(struct vbdev_ocf *);
-typedef void (*vbdev_ocf_mngt_callback)(int, void *);
+typedef void (*vbdev_ocf_mngt_callback)(int, struct vbdev_ocf *, void *);
 
 /* Context for asynchronous management operations
  * Single management operation usually contains a list of sub procedures,
@@ -160,11 +160,13 @@ struct vbdev_ocf {
 	TAILQ_ENTRY(vbdev_ocf)       tailq;
 };
 
-int vbdev_ocf_construct(
+void vbdev_ocf_construct(
 	const char *vbdev_name,
 	const char *cache_mode_name,
 	const char *cache_name,
-	const char *core_name);
+	const char *core_name,
+	void (*cb)(int, struct vbdev_ocf *, void *),
+	void *cb_arg);
 
 /* If vbdev is online, return its object */
 struct vbdev_ocf *vbdev_ocf_get_by_name(const char *name);

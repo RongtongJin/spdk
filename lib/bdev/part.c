@@ -146,6 +146,19 @@ spdk_bdev_part_io_type_supported(void *_part, enum spdk_bdev_io_type io_type)
 {
 	struct spdk_bdev_part *part = _part;
 
+	/* We can't decode/modify passthrough NVMe commands, so don't report
+	 *  that a partition supports these io types, even if the underlying
+	 *  bdev does.
+	 */
+	switch (io_type) {
+	case SPDK_BDEV_IO_TYPE_NVME_ADMIN:
+	case SPDK_BDEV_IO_TYPE_NVME_IO:
+	case SPDK_BDEV_IO_TYPE_NVME_IO_MD:
+		return false;
+	default:
+		break;
+	}
+
 	return part->internal.base->bdev->fn_table->io_type_supported(part->internal.base->bdev->ctxt,
 			io_type);
 }
@@ -237,7 +250,7 @@ spdk_bdev_part_submit_request(struct spdk_bdev_part_channel *ch, struct spdk_bde
 				     spdk_bdev_part_complete_io, bdev_io);
 		break;
 	default:
-		SPDK_ERRLOG("split: unknown I/O type %d\n", bdev_io->type);
+		SPDK_ERRLOG("unknown I/O type %d\n", bdev_io->type);
 		return SPDK_BDEV_IO_STATUS_FAILED;
 	}
 

@@ -75,8 +75,6 @@ function usage()
 	echo "                           example: /usr/src/ocf/"
 	echo " isal                      Enabled by default on x86 architecture. Can be built without though."
 	echo "                           No path required."
-	echo " ftl                       Required to build FTL module."
-	echo "                           No path required."
 	echo " uring                     Required to support I/O uring on Linux. If no argument, searches"
 	echo "                           the standard installation directory. If an argument is provided, it is"
 	echo "                           considered a directory containing liburing.a and io_uring.h."
@@ -293,12 +291,6 @@ for i in "$@"; do
 		--without-igb-uio-driver)
 			CONFIG[IGB_UIO_DRIVER]=n
 			;;
-		--with-ftl)
-			CONFIG[FTL]=y
-			;;
-		--without-ftl)
-			CONFIG[FTL]=n
-			;;
 		--with-ocf)
 			CONFIG[OCF]=y
 			CONFIG[OCF_PATH]=$(readlink -f "./ocf")
@@ -440,9 +432,10 @@ than or equal to 4.14 will see significantly reduced performance.
 fi
 
 if [[ "${CONFIG[ISAL]}" = "y" ]] || [[ "${CONFIG[CRYPTO]}" = "y" ]]; then
-	if [[ $(nasm -v | awk '{print $3}' | sed 's/[^0-9]*//g') -lt "21202" ]]; then
+	ver=$(nasm -v | awk '{print $3}' | sed 's/[^0-9]*//g')
+	if [[ "${ver:0:1}" -le "2" ]] && [[ "${ver:0:3}" -le "213" ]] && [[ "${ver:0:5}" -lt "21303" ]]; then
 		echo "Notice: ISA-L, compression & crypto auto-disabled due to nasm dependency."
-		echo "These features require NASM version 2.12.02 or newer.  Please install"
+		echo "These features require NASM version 2.13.03 or newer.  Please install"
 		echo "or upgrade then re-run this script."
 		CONFIG[ISAL]=n
 		CONFIG[CRYPTO]=n
