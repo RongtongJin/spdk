@@ -43,6 +43,7 @@
 #include "spdk_internal/thread.h"
 #include <fcntl.h>
 #include <time.h>
+
 #define WRITE_TIMES_PER_THREAD 10000
 #define WRITE_THREAD_NUM 2
 #define RAN_READ_THREAD_NUM 2
@@ -50,6 +51,10 @@
 #define RANDOM_READ_TIMES 10000
 #define CACHE_SIZE 1024
 #define MSG_SIZE 100
+
+#define RANDOM_READ 1
+#define SEQ_READ 1
+#define WRITE_CHECKFILE 0
 
 struct spdk_bs_dev *g_bs_dev;
 const char *g_bdev_name;
@@ -59,13 +64,14 @@ struct sync_args
 {
 	struct spdk_fs_thread_ctx *channel;
 };
+
 pthread_t mSpdkTid;
 volatile bool g_spdk_ready = false;
 volatile bool g_spdk_start_failure = false;
 uint32_t g_lcore = 0;
 pthread_mutex_t lock;
 volatile uint64_t writePos = 0;
-volatile uint32_t threadId = 0;
+uint32_t threadId = 0;
 
 __thread struct sync_args g_sync_args;
 
@@ -75,7 +81,7 @@ uint32_t spdk_env_get_first_core(void);
 
 char *msgContent;
 
-const char *fileName = "benchmark";
+const char *fileName = "blobfs-test";
 
 static char *randstr(char *pointer, int n)
 {
@@ -242,7 +248,7 @@ static void *random_read_work(void *args)
 		readPos = (rand() % fileLength) - MSG_SIZE;
 		if (readPos < 0)
 			readPos = 0;
-		memset(line,0,MSG_SIZE);
+		memset(line, 0, MSG_SIZE);
 		readSize = spdk_file_read(file, g_sync_args.channel, line, readPos, MSG_SIZE);
 		if (readSize != MSG_SIZE)
 		{
@@ -253,7 +259,7 @@ static void *random_read_work(void *args)
 		int pos = readPos % MSG_SIZE;
 		if (pos == 0)
 		{
-			if (memcmp(line, msgContent,MSG_SIZE))
+			if (memcmp(line, msgContent, MSG_SIZE))
 			{
 				SPDK_ERRLOG("pos=0, random read check error!!!\n");
 				break;
@@ -261,7 +267,7 @@ static void *random_read_work(void *args)
 		}
 		else
 		{
-			if (memcmp(line,msgContent+pos,MSG_SIZE-pos) || memcmp(line+MSG_SIZE-pos,msgContent,pos))
+			if (memcmp(line, msgContent + pos, MSG_SIZE - pos) || memcmp(line + MSG_SIZE - pos, msgContent, pos))
 			{
 				SPDK_ERRLOG("random read check error!!!\n");
 				break;
@@ -269,7 +275,7 @@ static void *random_read_work(void *args)
 		}
 	}
 	if (i == RANDOM_READ_TIMES)
-		printf("%s random read done, check times = %d\n", spdk_thread_get_name(spdk_get_thread()),i);
+		printf("%s random read done, check times = %d\n", spdk_thread_get_name(spdk_get_thread()), i);
 	free(line);
 	// spdk_file_close(file, g_sync_args.channel);
 	SpdkFinalizeThread();
@@ -293,18 +299,18 @@ static void *seq_read_work(void *args)
 	printf("%s sequential read start\n", spdk_thread_get_name(spdk_get_thread()));
 	while (readPos < fileLength)
 	{
-		memset(line,0,MSG_SIZE);
+		memset(line, 0, MSG_SIZE);
 		readSize = spdk_file_read(file, g_sync_args.channel, line, readPos, MSG_SIZE);
-		
+
 		if (readSize != MSG_SIZE)
 		{
 			SPDK_NOTICELOG("sequential read size error\n");
 			break;
 		}
 		//check
-		if (memcmp(line, msgContent,MSG_SIZE))
+		if (memcmp(line, msgContent, MSG_SIZE))
 		{
-			SPDK_ERRLOG("sequential read check error!!!,line=%s\n",line);
+			SPDK_ERRLOG("sequential read check error!!!,line=%s\n", line);
 			break;
 		}
 		readPos += MSG_SIZE;
@@ -328,7 +334,7 @@ int main(int argc, char **argv)
 	}
 
 	spdk_app_opts_init(opts);
-	opts->name = "blobfs-benchmark";
+	opts->name = "blobfs-test";
 	opts->config_file = argv[1];
 	// opts->reactor_mask = "0x01";
 	opts->shutdown_cb = NULL;
@@ -359,7 +365,7 @@ int main(int argc, char **argv)
 		exit(0);
 	}
 
-	printf("Generate a msgContent of random length\n");
+	printf("Generate a message.\n");
 
 	msgContent = (char *)malloc(MSG_SIZE);
 
@@ -371,7 +377,6 @@ int main(int argc, char **argv)
 	struct spdk_file_stat stat;
 	if (!spdk_fs_file_stat(g_fs, g_sync_args.channel, fileName, &stat))
 		spdk_fs_delete_file(g_fs, g_sync_args.channel, fileName);
-
 
 	int err = spdk_fs_open_file(g_fs, g_sync_args.channel, fileName, SPDK_BLOBFS_OPEN_CREATE, &file);
 	if (err != 0)
@@ -401,11 +406,12 @@ int main(int argc, char **argv)
 		pthread_join(write_threads[i], NULL);
 	}
 	long write_end = clock();
-	printf("Write done， write threads num = %d , cacheSize = %d, msgSize = %d, msgTotalNum = %d, cost time = %ld\n",
+	printf("Write done， write threads num = %d, cacheSize = %d, msgSize = %d, msgTotalNum = %d, cost time = %ld\n",
 		   WRITE_THREAD_NUM, CACHE_SIZE, MSG_SIZE, WRITE_THREAD_NUM * WRITE_TIMES_PER_THREAD, write_end - write_start);
 	free(write_threads);
 
-	/*random read*/
+/*random read*/
+#if (RANDOM_READ)
 	pthread_t *ran_read_threads = (pthread_t *)malloc(sizeof(pthread_t) * RAN_READ_THREAD_NUM);
 	if (ran_read_threads == NULL)
 	{
@@ -425,10 +431,12 @@ int main(int argc, char **argv)
 	}
 	long ran_read_end = clock();
 	printf("random read done， random read threads num = %d, random read time per thread = %d, msgSize = %d, msgTotalNum = %d, cost time = %ld\n",
-	 	   RAN_READ_THREAD_NUM, RANDOM_READ_TIMES, MSG_SIZE, RAN_READ_THREAD_NUM * RANDOM_READ_TIMES, ran_read_end - ran_read_start);
+		   RAN_READ_THREAD_NUM, RANDOM_READ_TIMES, MSG_SIZE, RAN_READ_THREAD_NUM * RANDOM_READ_TIMES, ran_read_end - ran_read_start);
 	free(ran_read_threads);
+#endif
 
-	/*sequential read*/
+/*sequential read*/
+#if (SEQ_READ)
 	pthread_t *seq_read_threads = (pthread_t *)malloc(sizeof(pthread_t) * SEQ_READ_THREAD_NUM);
 	if (seq_read_threads == NULL)
 	{
@@ -451,30 +459,34 @@ int main(int argc, char **argv)
 	printf("Sequential read done， seq read threads num = %d, cacheSize = %d, msgSize = %d, msgTotalNum = %d, cost time = %ld\n",
 		   SEQ_READ_THREAD_NUM, CACHE_SIZE, MSG_SIZE, SEQ_READ_THREAD_NUM * WRITE_THREAD_NUM * WRITE_TIMES_PER_THREAD, seq_read_end - seq_read_start);
 	free(seq_read_threads);
+#endif
 
-	
-	
-	/*write to local filesystem for check*/
-	// char * line=(char *)malloc(MSG_SIZE);
-	// uint64_t readpos=0;
-	// uint64_t fileLength=spdk_file_get_length(file);
-	// printf("file size=%ld\n",fileLength);
-	// int writeSize=0;
-	// int fd=open("checkfile",O_CREAT|O_RDWR,0666);
-	// if(fd<0){
-	// 	SPDK_ERRLOG("fd < 0");
-	// }
-	// while(readpos<fileLength){
-	// 	spdk_file_read(file,g_sync_args.channel,line,readpos,MSG_SIZE);
-	// 	writeSize=write(fd,line,MSG_SIZE);
-	// 	if(writeSize<0){
-	// 		SPDK_NOTICELOG("write checkfile size <0\n");
-	// 		break;
-	// 	}
-	// 	readpos+=MSG_SIZE;
-	// }
-	// printf("write checkfile done\n");
-	// free(line);
+/*write to local filesystem for check*/
+#if (WRITE_CHECKFILE)
+	char *line = (char *)malloc(MSG_SIZE);
+	uint64_t readpos = 0;
+	uint64_t fileLength = spdk_file_get_length(file);
+	printf("file size=%ld\n", fileLength);
+	int writeSize = 0;
+	int fd = open("checkfile", O_CREAT | O_RDWR, 0666);
+	if (fd < 0)
+	{
+		SPDK_ERRLOG("fd < 0");
+	}
+	while (readpos < fileLength)
+	{
+		spdk_file_read(file, g_sync_args.channel, line, readpos, MSG_SIZE);
+		writeSize = write(fd, line, MSG_SIZE);
+		if (writeSize < 0)
+		{
+			SPDK_NOTICELOG("write checkfile size <0\n");
+			break;
+		}
+		readpos += MSG_SIZE;
+	}
+	printf("write checkfile done\n");
+	free(line);
+#endif
 
 	/*clean up*/
 	free(msgContent);
